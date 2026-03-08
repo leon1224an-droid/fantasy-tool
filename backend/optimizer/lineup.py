@@ -199,6 +199,9 @@ async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
 
         result = optimize_lineup(players, week_num)
         results.append(result)
-        print(result.display())
+        try:
+            print(result.display())
+        except UnicodeEncodeError:
+            print(result.display().encode("ascii", errors="replace").decode("ascii"))
 
     return results

@@ -6,10 +6,11 @@ Fantasy scoring weights below match a common H2H Points league.
 Edit SCORING to match your actual league settings.
 """
 
+import asyncio
 import os
 from typing import Any
 
-import httpx
+from nba_api.stats.endpoints import leaguedashplayerstats
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,49 +50,8 @@ SCORING: dict[str, float] = {
 }
 
 # ---------------------------------------------------------------------------
-# NBA Stats API
+# NBA Stats API — uses nba_api package (handles headers/auth automatically)
 # ---------------------------------------------------------------------------
-NBA_STATS_URL = "https://stats.nba.com/stats/leaguedashplayerstats"
-NBA_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Referer": "https://www.nba.com/",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "x-nba-stats-origin": "stats",
-    "x-nba-stats-token": "true",
-}
-NBA_PARAMS = {
-    "MeasureType": "Base",
-    "PerMode": "PerGame",
-    "PlusMinus": "N",
-    "PaceAdjust": "N",
-    "Rank": "N",
-    "LeagueID": "00",
-    "SeasonType": "Regular Season",
-    "PlayerOrTeam": "Player",
-    "Outcome": "",
-    "Location": "",
-    "Month": "0",
-    "SeasonSegment": "",
-    "DateFrom": "",
-    "DateTo": "",
-    "OpponentTeamID": "0",
-    "VsConference": "",
-    "VsDivision": "",
-    "GameSegment": "",
-    "Period": "0",
-    "ShotClockRange": "",
-    "LastNGames": "0",
-    "GameScope": "",
-    "PlayerExperience": "",
-    "PlayerPosition": "",
-    "StarterBench": "",
-    "TwoWay": "0",
-}
 
 
 def compute_fantasy_ppg(stats: dict[str, float]) -> float:
@@ -111,35 +71,34 @@ async def fetch_nba_player_stats(
 ) -> dict[str, dict[str, float]]:
     """
     Returns {player_name: {pts, reb, ast, stl, blk, tov, tpm, fg_pct, ft_pct}}
-    using NBA season-average per-game stats.
+    using NBA season-average per-game stats via nba_api.
     """
     season = season or os.getenv("NBA_SEASON", "2025-26")
-    params = {**NBA_PARAMS, "Season": season}
 
-    async with httpx.AsyncClient(timeout=30, headers=NBA_HEADERS) as client:
-        resp = await client.get(NBA_STATS_URL, params=params)
-        resp.raise_for_status()
-        data = resp.json()
+    # nba_api is synchronous — run in a thread so we don't block the event loop
+    def _fetch() -> dict[str, dict[str, float]]:
+        endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="PerGame",
+            timeout=60,
+        )
+        df = endpoint.get_data_frames()[0]
+        stats_by_name: dict[str, dict[str, float]] = {}
+        for _, row in df.iterrows():
+            stats_by_name[row["PLAYER_NAME"]] = {
+                "pts":    float(row.get("PTS")    or 0),
+                "reb":    float(row.get("REB")    or 0),
+                "ast":    float(row.get("AST")    or 0),
+                "stl":    float(row.get("STL")    or 0),
+                "blk":    float(row.get("BLK")    or 0),
+                "tov":    float(row.get("TOV")    or 0),
+                "tpm":    float(row.get("FG3M")   or 0),
+                "fg_pct": float(row.get("FG_PCT") or 0),
+                "ft_pct": float(row.get("FT_PCT") or 0),
+            }
+        return stats_by_name
 
-    result_set = data["resultSets"][0]
-    headers: list[str] = result_set["headers"]
-    rows: list[list] = result_set["rowSet"]
-
-    stats_by_name: dict[str, dict[str, float]] = {}
-    for row in rows:
-        r = dict(zip(headers, row))
-        stats_by_name[r["PLAYER_NAME"]] = {
-            "pts":    float(r.get("PTS")    or 0),
-            "reb":    float(r.get("REB")    or 0),
-            "ast":    float(r.get("AST")    or 0),
-            "stl":    float(r.get("STL")    or 0),
-            "blk":    float(r.get("BLK")    or 0),
-            "tov":    float(r.get("TOV")    or 0),
-            "tpm":    float(r.get("FG3M")   or 0),
-            "fg_pct": float(r.get("FG_PCT") or 0),
-            "ft_pct": float(r.get("FT_PCT") or 0),
-        }
-    return stats_by_name
+    return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
 
 async def seed_players(db: AsyncSession) -> dict[str, int]:
