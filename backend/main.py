@@ -4,27 +4,33 @@ FastAPI application entry point.
 Endpoints
 ---------
 GET  /health                  — liveness check
-POST /ingest/schedule         — pull ESPN schedule → TeamSchedule rows
+POST /ingest/schedule         — pull ESPN schedule → TeamSchedule + GameDay rows
 POST /ingest/projections      — pull NBA Stats averages → PlayerProjection rows
 POST /ingest/all              — schedule then projections in one call
-GET  /schedule                — view stored games-per-week for roster teams
-GET  /projections             — view stored projections (optional ?week=21|22|23)
-GET  /optimize                — run ILP optimizer (optional ?week=21|22|23)
+GET  /schedule                — games-per-week for roster teams
+GET  /projections             — stored projections (optional ?week=21|22|23)
+GET  /optimize                — ILP weekly lineup optimizer (optional ?week=21|22|23)
+GET  /calendar                — daily greedy lineup for every day of all 3 weeks
+GET  /player-grid             — player × day game/start matrix with raw vs playable totals
 """
 
+import asyncio
+from collections import defaultdict
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from datetime import date
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select, update
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import dispose_db, get_db, init_db
-from .ingestion.projections import ROSTER, ingest_projections
-from .ingestion.schedule import ingest_schedule
-from .models import Player, PlayerProjection, TeamSchedule
+from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
+from .ingestion.schedule import PLAYOFF_WEEKS, ingest_schedule
+from .models import GameDay, Player, PlayerProjection, TeamSchedule
+from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
 
 
@@ -41,7 +47,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Fantasy Basketball Playoff Optimizer",
     description="Optimizes weekly lineups for a 13-player roster over a 3-week playoff.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -62,7 +68,6 @@ class HealthResponse(BaseModel):
 
 class IngestScheduleResponse(BaseModel):
     status: str
-    # {week_num_str: {team: games_count}}
     schedule: dict[str, dict[str, int]]
 
 
@@ -110,6 +115,51 @@ class WeeklyLineupResponse(BaseModel):
     total_projected: float
 
 
+# Calendar schemas
+class DailySlot(BaseModel):
+    slot: str
+    player: str | None = None
+
+
+class DailyLineupResponse(BaseModel):
+    date: str           # "2026-03-16"
+    day_label: str      # "Mon 3/16"
+    players_available: int
+    players_starting: int
+    lineup: list[DailySlot]   # 10 slots in order
+    benched: list[str]
+    all_starting: bool  # True when no one is benched
+
+
+class WeeklyCalendarResponse(BaseModel):
+    week_num: int
+    week_dates: str     # "Mar 16 – Mar 22"
+    days: list[DailyLineupResponse]
+
+
+# Player grid schemas
+class PlayerDayCell(BaseModel):
+    date: str
+    day_label: str
+    week_num: int
+    has_game: bool
+    is_starting: bool   # True if the daily optimizer put them in a slot
+
+
+class PlayerGridRow(BaseModel):
+    player: str
+    team: str
+    positions: list[str]
+    days: list[PlayerDayCell]                  # all 21 days
+    raw_totals: dict[str, int]                 # week_num str → raw games
+    playable_totals: dict[str, int]            # week_num str → startable days
+    raw_grand_total: int
+    playable_grand_total: int
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def _lineup_to_response(result: LineupResult) -> WeeklyLineupResponse:
     return WeeklyLineupResponse(
         week_num=result.week_num,
@@ -124,6 +174,109 @@ def _lineup_to_response(result: LineupResult) -> WeeklyLineupResponse:
     )
 
 
+WEEK_DATES_LABEL = {
+    21: "Mar 16 – Mar 22",
+    22: "Mar 23 – Mar 29",
+    23: "Mar 30 – Apr 5",
+}
+
+
+async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]:
+    """
+    Core logic shared by /calendar and /player-grid.
+    Loads GameDay + Player rows, runs the daily greedy optimizer for every
+    day in all 3 weeks, and returns structured WeeklyCalendarResponse objects.
+    """
+    roster_teams = {p["team"] for p in ROSTER}
+
+    # Load all game days for roster teams
+    gd_rows = (
+        await db.execute(
+            select(GameDay)
+            .where(GameDay.team.in_(roster_teams))
+            .order_by(GameDay.week_num, GameDay.game_date)
+        )
+    ).scalars().all()
+
+    if not gd_rows:
+        return []
+
+    # Build {week_num: {game_date: [team, ...]}}
+    days_map: dict[int, dict[date, list[str]]] = defaultdict(lambda: defaultdict(list))
+    for gd in gd_rows:
+        days_map[gd.week_num][gd.game_date].append(gd.team)
+
+    # Also keep date → label map
+    date_label: dict[date, str] = {gd.game_date: gd.day_label for gd in gd_rows}
+
+    # Load roster players with their fantasy_ppg (for tie-breaking in greedy)
+    player_rows = (await db.execute(select(Player).where(Player.is_active == True))).scalars().all()
+    # fantasy_ppg per player (average across weeks)
+    proj_rows = (await db.execute(select(PlayerProjection))).scalars().all()
+    ppg_map: dict[int, float] = defaultdict(float)
+    ppg_count: dict[int, int] = defaultdict(int)
+    for proj in proj_rows:
+        ppg_map[proj.player_id] += proj.fantasy_ppg
+        ppg_count[proj.player_id] += 1
+    avg_ppg: dict[int, float] = {
+        pid: ppg_map[pid] / ppg_count[pid] for pid in ppg_map
+    }
+
+    # Build player lookup: team → list[DailyPlayer]
+    team_players: dict[str, list[DailyPlayer]] = defaultdict(list)
+    for p in player_rows:
+        team_players[p.team].append(
+            DailyPlayer(
+                name=p.name,
+                positions=p.positions,
+                fantasy_ppg=avg_ppg.get(p.id, 0.0),
+            )
+        )
+
+    weekly_results: list[WeeklyCalendarResponse] = []
+
+    for week_meta in PLAYOFF_WEEKS:
+        week_num = week_meta["week"]
+        start_d: date = week_meta["start"]
+        end_d: date = week_meta["end"]
+
+        daily_responses: list[DailyLineupResponse] = []
+
+        d = start_d
+        while d <= end_d:
+            teams_today = days_map[week_num].get(d, [])
+            label = date_label.get(d, f"{d.strftime('%a')} {d.month}/{d.day}")
+
+            # Collect roster players with games today
+            players_today: list[DailyPlayer] = []
+            for team in teams_today:
+                players_today.extend(team_players.get(team, []))
+
+            result = optimize_daily_lineup(players_today)
+
+            daily_responses.append(DailyLineupResponse(
+                date=d.isoformat(),
+                day_label=label,
+                players_available=result.total_available,
+                players_starting=result.total_playing,
+                lineup=[
+                    DailySlot(slot=slot, player=result.lineup.get(slot))
+                    for slot in ["PG", "SG", "G", "SF", "PF", "F", "C1", "C2", "UTIL1", "UTIL2"]
+                ],
+                benched=result.benched,
+                all_starting=len(result.benched) == 0,
+            ))
+            d = date.fromordinal(d.toordinal() + 1)
+
+        weekly_results.append(WeeklyCalendarResponse(
+            week_num=week_num,
+            week_dates=WEEK_DATES_LABEL[week_num],
+            days=daily_responses,
+        ))
+
+    return weekly_results
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -134,10 +287,7 @@ async def health():
 
 @app.post("/ingest/schedule", response_model=IngestScheduleResponse, tags=["ingestion"])
 async def run_ingest_schedule(db: AsyncSession = Depends(get_db)):
-    """
-    Fetch the ESPN NBA schedule for playoff weeks 21–23 and upsert
-    TeamSchedule rows.  Takes ~5 s (one HTTP request per day × 21 days).
-    """
+    """Fetch ESPN schedule → upsert TeamSchedule + GameDay rows."""
     schedule = await ingest_schedule(db)
     return IngestScheduleResponse(
         status="ok",
@@ -147,17 +297,14 @@ async def run_ingest_schedule(db: AsyncSession = Depends(get_db)):
 
 @app.post("/ingest/projections", response_model=IngestResponse, tags=["ingestion"])
 async def run_ingest_projections(db: AsyncSession = Depends(get_db)):
-    """
-    Seed roster players then fetch NBA season-average per-game stats and
-    upsert PlayerProjection rows.  Requires schedule rows to already exist.
-    """
+    """Seed players then fetch NBA Stats season averages → PlayerProjection rows."""
     await ingest_projections(db)
     return IngestResponse(status="ok", message="Projections ingested for all 3 playoff weeks.")
 
 
 @app.post("/ingest/all", response_model=IngestScheduleResponse, tags=["ingestion"])
 async def run_ingest_all(db: AsyncSession = Depends(get_db)):
-    """Run schedule ingestion then projections ingestion in one request."""
+    """Run schedule then projections ingestion in one request."""
     schedule = await ingest_schedule(db)
     await ingest_projections(db)
     return IngestScheduleResponse(
@@ -195,9 +342,7 @@ async def get_projections(
     week: int | None = Query(default=None, ge=21, le=23),
     db: AsyncSession = Depends(get_db),
 ):
-    """
-    Return stored projections.  Optionally filter by ?week=21|22|23.
-    """
+    """Return stored projections. Optionally filter by ?week=21|22|23."""
     stmt = (
         select(Player, PlayerProjection)
         .join(PlayerProjection, Player.id == PlayerProjection.player_id)
@@ -236,11 +381,10 @@ async def run_optimize(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Run the ILP lineup optimizer.  Returns optimal starters + bench per week.
+    Run the ILP weekly lineup optimizer. Returns optimal starters + bench per week.
     Optionally restrict to a single week with ?week=21|22|23.
     """
     if week is not None:
-        # Single-week optimisation
         rows = (
             await db.execute(
                 select(Player, PlayerProjection)
@@ -266,7 +410,6 @@ async def run_optimize(
         result = optimize_lineup(players, week)
         return [_lineup_to_response(result)]
 
-    # All 3 weeks
     results = await optimize_all_weeks(db)
     if not results:
         raise HTTPException(
@@ -274,3 +417,260 @@ async def run_optimize(
             detail="No projection data found. Run /ingest/all first.",
         )
     return [_lineup_to_response(r) for r in results]
+
+
+@app.get("/calendar", response_model=list[WeeklyCalendarResponse], tags=["optimizer"])
+async def get_calendar(db: AsyncSession = Depends(get_db)):
+    """
+    Daily greedy lineup optimizer across all 3 playoff weeks.
+    For each day shows which roster players have games, their slot assignments,
+    and who gets benched due to position constraints.
+    """
+    results = await _build_daily_lineups(db)
+    if not results:
+        raise HTTPException(
+            status_code=404,
+            detail="No schedule data found. Run /ingest/all first.",
+        )
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Roster management schemas
+# ---------------------------------------------------------------------------
+class NBAPlayerSearchResult(BaseModel):
+    player_id: int
+    name: str
+    is_active: bool
+
+
+class NBAPlayerInfo(BaseModel):
+    player_id: int
+    name: str
+    team: str
+    nba_position: str
+    positions: list[str]   # mapped fantasy positions
+
+
+class RosterAddRequest(BaseModel):
+    player_id: int
+    name: str
+    team: str
+    positions: list[str]
+
+
+class RosterPlayer(BaseModel):
+    name: str
+    team: str
+    positions: list[str]
+    is_active: bool
+
+
+# ---------------------------------------------------------------------------
+# Roster management routes
+# ---------------------------------------------------------------------------
+@app.get("/roster", response_model=list[RosterPlayer], tags=["roster"])
+async def get_roster(db: AsyncSession = Depends(get_db)):
+    """Return all active roster players."""
+    players = (
+        await db.execute(
+            select(Player).where(Player.is_active == True).order_by(Player.name)
+        )
+    ).scalars().all()
+    return [
+        RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=p.is_active)
+        for p in players
+    ]
+
+
+@app.get("/players/search", response_model=list[NBAPlayerSearchResult], tags=["roster"])
+async def search_nba_players(q: str = Query(min_length=2)):
+    """Search active NBA players by name (uses local nba_api static data — no API call)."""
+    from nba_api.stats.static import players as nba_static
+
+    matches = nba_static.find_players_by_full_name(q)
+    active = [p for p in matches if p["is_active"]][:10]
+    return [
+        NBAPlayerSearchResult(player_id=p["id"], name=p["full_name"], is_active=p["is_active"])
+        for p in active
+    ]
+
+
+@app.get("/players/info/{player_id}", response_model=NBAPlayerInfo, tags=["roster"])
+async def get_nba_player_info(player_id: int):
+    """Fetch team and position for a specific NBA player (one NBA API call)."""
+    from nba_api.stats.endpoints import commonplayerinfo
+    from .ingestion.schedule import ESPN_ABBR_MAP
+
+    def _fetch():
+        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
+        df = info.get_data_frames()[0]
+        row = df.iloc[0]
+        return {
+            "name": str(row.get("DISPLAY_FIRST_LAST", "")),
+            "team": str(row.get("TEAM_ABBREVIATION", "")),
+            "nba_position": str(row.get("POSITION", "F")),
+        }
+
+    data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+
+    # Normalise team abbreviation to match our schedule codes
+    reverse_map = {v: v for v in ESPN_ABBR_MAP.values()}
+    reverse_map.update({"SA": "SAS", "GS": "GSW", "NO": "NOP", "NY": "NYK"})
+    team = reverse_map.get(data["team"].upper(), data["team"].upper())
+
+    positions = map_nba_position(data["nba_position"])
+
+    return NBAPlayerInfo(
+        player_id=player_id,
+        name=data["name"],
+        team=team,
+        nba_position=data["nba_position"],
+        positions=positions,
+    )
+
+
+@app.post("/roster", response_model=RosterPlayer, tags=["roster"])
+async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_db)):
+    """
+    Add a player to the active roster (max 13).
+    If the player already exists but is inactive, reactivates them.
+    After adding, hit POST /ingest/projections to get their stats.
+    """
+    # Check if already on roster
+    existing = (
+        await db.execute(select(Player).where(Player.name == body.name))
+    ).scalar_one_or_none()
+
+    if existing and existing.is_active:
+        raise HTTPException(status_code=400, detail=f"{body.name} is already on your roster.")
+
+    # Check max size (only if this is a new player, not a reactivation)
+    if not existing:
+        count: int = (
+            await db.execute(
+                select(func.count(Player.id)).where(Player.is_active == True)
+            )
+        ).scalar_one()
+        if count >= 13:
+            raise HTTPException(status_code=400, detail="Roster is full (max 13 players).")
+
+    # Upsert player
+    stmt = (
+        pg_insert(Player)
+        .values(
+            name=body.name,
+            team=body.team,
+            positions=body.positions,
+            is_active=True,
+        )
+        .on_conflict_do_update(
+            constraint="uq_players_name",
+            set_={"team": body.team, "positions": body.positions, "is_active": True},
+        )
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    player = (
+        await db.execute(select(Player).where(Player.name == body.name))
+    ).scalar_one()
+    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=True)
+
+
+@app.delete("/roster/{player_name}", tags=["roster"])
+async def remove_from_roster(player_name: str, db: AsyncSession = Depends(get_db)):
+    """Remove a player from the active roster (sets is_active=False)."""
+    result = await db.execute(
+        update(Player).where(Player.name == player_name).values(is_active=False)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found.")
+    await db.commit()
+    return {"status": "ok", "removed": player_name}
+
+
+@app.get("/player-grid", response_model=list[PlayerGridRow], tags=["data"])
+async def get_player_grid(db: AsyncSession = Depends(get_db)):
+    """
+    Player × day grid for all 21 playoff days.
+    Each row shows: which days a player has a game, whether they're starting
+    that day (per daily optimizer), raw game totals, and playable (startable)
+    totals per week.
+    """
+    calendar = await _build_daily_lineups(db)
+    if not calendar:
+        raise HTTPException(
+            status_code=404,
+            detail="No schedule data found. Run /ingest/all first.",
+        )
+
+    # Build a set of (player_name, date_str) → is_starting
+    starting_map: dict[tuple[str, str], bool] = {}
+    for week_cal in calendar:
+        for day in week_cal.days:
+            for slot in day.lineup:
+                if slot.player:
+                    starting_map[(slot.player, day.date)] = True
+            for benched in day.benched:
+                starting_map[(benched, day.date)] = False
+
+    # Collect all days in order
+    all_days: list[tuple[str, str, int]] = []  # (date_str, label, week_num)
+    for week_cal in calendar:
+        for day in week_cal.days:
+            all_days.append((day.date, day.day_label, week_cal.week_num))
+
+    # Build set of dates each roster team plays
+    roster_teams = {p["team"] for p in ROSTER}
+    gd_rows = (
+        await db.execute(
+            select(GameDay)
+            .where(GameDay.team.in_(roster_teams))
+        )
+    ).scalars().all()
+    team_game_dates: dict[str, set[str]] = defaultdict(set)
+    for gd in gd_rows:
+        team_game_dates[gd.team].add(gd.game_date.isoformat())
+
+    # Load roster players
+    player_rows = (
+        await db.execute(select(Player).where(Player.is_active == True))
+    ).scalars().all()
+
+    grid: list[PlayerGridRow] = []
+    for p in sorted(player_rows, key=lambda x: x.name):
+        days: list[PlayerDayCell] = []
+        raw_totals: dict[str, int] = {"21": 0, "22": 0, "23": 0}
+        playable_totals: dict[str, int] = {"21": 0, "22": 0, "23": 0}
+
+        for date_str, label, week_num in all_days:
+            has_game = date_str in team_game_dates.get(p.team, set())
+            is_starting = starting_map.get((p.name, date_str), False) if has_game else False
+
+            days.append(PlayerDayCell(
+                date=date_str,
+                day_label=label,
+                week_num=week_num,
+                has_game=has_game,
+                is_starting=is_starting,
+            ))
+
+            wk = str(week_num)
+            if has_game:
+                raw_totals[wk] = raw_totals.get(wk, 0) + 1
+            if is_starting:
+                playable_totals[wk] = playable_totals.get(wk, 0) + 1
+
+        grid.append(PlayerGridRow(
+            player=p.name,
+            team=p.team,
+            positions=p.positions,
+            days=days,
+            raw_totals=raw_totals,
+            playable_totals=playable_totals,
+            raw_grand_total=sum(raw_totals.values()),
+            playable_grand_total=sum(playable_totals.values()),
+        ))
+
+    return grid

@@ -51,6 +51,21 @@ class TeamSchedule(Base):
     games_count: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
+class GameDay(Base):
+    """One row per team per game date — used for daily lineup optimization."""
+
+    __tablename__ = "game_days"
+    __table_args__ = (
+        UniqueConstraint("team", "game_date", name="uq_game_day_team_date"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    team: Mapped[str] = mapped_column(String(5), nullable=False)
+    week_num: Mapped[int] = mapped_column(Integer, nullable=False)
+    game_date: Mapped[date] = mapped_column(Date, nullable=False)
+    day_label: Mapped[str] = mapped_column(String(10), nullable=False)  # e.g. "Mon 3/16"
+
+
 class PlayerProjection(Base):
     """
     Per-game stat projections for a player in a given playoff week.

@@ -67,6 +67,45 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="calendar"
+        options={{
+          title: "Calendar",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="calendar-today"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="player-grid"
+        options={{
+          title: "Grid",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="grid"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="roster"
+        options={{
+          title: "Roster",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="account-group"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

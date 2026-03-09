@@ -47,6 +47,48 @@ export interface HealthResponse {
   status: string;
 }
 
+// Calendar
+export interface DailySlot {
+  slot: string;
+  player: string | null;
+}
+
+export interface DailyLineupResponse {
+  date: string;
+  day_label: string;
+  players_available: number;
+  players_starting: number;
+  lineup: DailySlot[];
+  benched: string[];
+  all_starting: boolean;
+}
+
+export interface WeeklyCalendarResponse {
+  week_num: number;
+  week_dates: string;
+  days: DailyLineupResponse[];
+}
+
+// Player grid
+export interface PlayerDayCell {
+  date: string;
+  day_label: string;
+  week_num: number;
+  has_game: boolean;
+  is_starting: boolean;
+}
+
+export interface PlayerGridRow {
+  player: string;
+  team: string;
+  positions: string[];
+  days: PlayerDayCell[];
+  raw_totals: Record<string, number>;
+  playable_totals: Record<string, number>;
+  raw_grand_total: number;
+  playable_grand_total: number;
+}
+
 // ---------------------------------------------------------------------------
 // API helpers
 // ---------------------------------------------------------------------------
@@ -80,4 +122,65 @@ export async function ingestAll(): Promise<void> {
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
+}
+
+export function getCalendar(): Promise<WeeklyCalendarResponse[]> {
+  return apiFetch<WeeklyCalendarResponse[]>("/calendar");
+}
+
+export function getPlayerGrid(): Promise<PlayerGridRow[]> {
+  return apiFetch<PlayerGridRow[]>("/player-grid");
+}
+
+// Roster management
+export interface NBAPlayerSearchResult {
+  player_id: number;
+  name: string;
+  is_active: boolean;
+}
+
+export interface NBAPlayerInfo {
+  player_id: number;
+  name: string;
+  team: string;
+  nba_position: string;
+  positions: string[];
+}
+
+export interface RosterPlayer {
+  name: string;
+  team: string;
+  positions: string[];
+  is_active: boolean;
+}
+
+export function getRoster(): Promise<RosterPlayer[]> {
+  return apiFetch<RosterPlayer[]>("/roster");
+}
+
+export function searchPlayers(q: string): Promise<NBAPlayerSearchResult[]> {
+  return apiFetch<NBAPlayerSearchResult[]>(`/players/search?q=${encodeURIComponent(q)}`);
+}
+
+export function getPlayerInfo(playerId: number): Promise<NBAPlayerInfo> {
+  return apiFetch<NBAPlayerInfo>(`/players/info/${playerId}`);
+}
+
+export function addToRoster(body: {
+  player_id: number;
+  name: string;
+  team: string;
+  positions: string[];
+}): Promise<RosterPlayer> {
+  return apiFetch<RosterPlayer>("/roster", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function removeFromRoster(playerName: string): Promise<void> {
+  return apiFetch<void>(`/roster/${encodeURIComponent(playerName)}`, {
+    method: "DELETE",
+  });
 }

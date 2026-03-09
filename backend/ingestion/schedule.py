@@ -1,6 +1,7 @@
 """
 Fetches the NBA game schedule for the 3 playoff weeks by querying the ESPN
-public scoreboard API one day at a time, then upserts TeamSchedule rows.
+public scoreboard API one day at a time, then upserts TeamSchedule and
+GameDay rows.
 
 ESPN scoreboard endpoint (no auth required):
   GET https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard
@@ -14,7 +15,7 @@ import httpx
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import TeamSchedule
+from ..models import GameDay, TeamSchedule
 
 # ---------------------------------------------------------------------------
 # Playoff week definitions
@@ -31,17 +32,25 @@ ESPN_SCOREBOARD_URL = (
 
 # ESPN sometimes uses shorter codes; normalise to standard 2-3 letter tricodes
 ESPN_ABBR_MAP: dict[str, str] = {
-    "SA":  "SAS",
-    "GS":  "GSW",
-    "NO":  "NOP",
-    "NY":  "NYK",
-    "PHX": "PHX",
+    "SA":   "SAS",
+    "GS":   "GSW",
+    "NO":   "NOP",
+    "NY":   "NYK",
+    "PHX":  "PHX",
     "UTAH": "UTA",
 }
+
+DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
 def _normalise(abbr: str) -> str:
     return ESPN_ABBR_MAP.get(abbr.upper(), abbr.upper())
+
+
+def _day_label(d: date) -> str:
+    """Return a short label like 'Mon 3/16'."""
+    dow = DAY_NAMES[d.weekday()]
+    return f"{dow} {d.month}/{d.day}"
 
 
 async def _games_on_date(client: httpx.AsyncClient, d: date) -> list[str]:
@@ -63,36 +72,45 @@ async def _games_on_date(client: httpx.AsyncClient, d: date) -> list[str]:
     return teams
 
 
-async def fetch_schedule() -> dict[int, dict[str, int]]:
+async def fetch_schedule() -> tuple[dict[int, dict[str, int]], dict[int, dict[date, list[str]]]]:
     """
-    Returns {week_num: {team_tricode: games_count}} for all 3 playoff weeks.
-    Makes one HTTP request per day (21 total requests).
+    Returns:
+      - week_counts:  {week_num: {team: games_count}}
+      - week_days:    {week_num: {game_date: [team, ...]}}
+    Makes one HTTP request per day (21 total).
     """
-    results: dict[int, dict[str, int]] = {}
+    week_counts: dict[int, dict[str, int]] = {}
+    week_days: dict[int, dict[date, list[str]]] = {}
 
     async with httpx.AsyncClient(timeout=20) as client:
         for week in PLAYOFF_WEEKS:
             counts: dict[str, int] = defaultdict(int)
+            days: dict[date, list[str]] = {}
+
             d = week["start"]
             while d <= week["end"]:
                 teams = await _games_on_date(client, d)
+                days[d] = teams
                 for team in teams:
                     counts[team] += 1
                 d += timedelta(days=1)
-            results[week["week"]] = dict(counts)
 
-    return results
+            week_counts[week["week"]] = dict(counts)
+            week_days[week["week"]] = days
+
+    return week_counts, week_days
 
 
 async def ingest_schedule(db: AsyncSession) -> dict[int, dict[str, int]]:
     """
-    Fetch the NBA schedule and upsert TeamSchedule rows for all 3 playoff weeks.
-    Returns the raw {week_num: {team: games}} dict for inspection.
+    Fetch the NBA schedule and upsert TeamSchedule + GameDay rows.
+    Returns the raw {week_num: {team: games_count}} dict for inspection.
     """
-    schedule = await fetch_schedule()
+    week_counts, week_days = await fetch_schedule()
     week_meta = {w["week"]: w for w in PLAYOFF_WEEKS}
 
-    for week_num, team_games in schedule.items():
+    # Upsert TeamSchedule (weekly game counts)
+    for week_num, team_games in week_counts.items():
         meta = week_meta[week_num]
         for team, games_count in team_games.items():
             stmt = (
@@ -111,7 +129,29 @@ async def ingest_schedule(db: AsyncSession) -> dict[int, dict[str, int]]:
             )
             await db.execute(stmt)
 
+    # Upsert GameDay (individual game dates per team)
+    game_day_count = 0
+    for week_num, days in week_days.items():
+        for game_date, teams in days.items():
+            label = _day_label(game_date)
+            for team in teams:
+                stmt = (
+                    insert(GameDay)
+                    .values(
+                        team=team,
+                        week_num=week_num,
+                        game_date=game_date,
+                        day_label=label,
+                    )
+                    .on_conflict_do_update(
+                        constraint="uq_game_day_team_date",
+                        set_={"week_num": week_num, "day_label": label},
+                    )
+                )
+                await db.execute(stmt)
+                game_day_count += 1
+
     await db.commit()
-    total_pairs = sum(len(v) for v in schedule.values())
-    print(f"[schedule] Ingested {total_pairs} team-week pairs.")
-    return schedule
+    total_pairs = sum(len(v) for v in week_counts.values())
+    print(f"[schedule] Ingested {total_pairs} team-week pairs, {game_day_count} game-day rows.")
+    return week_counts

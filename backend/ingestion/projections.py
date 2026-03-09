@@ -2,8 +2,9 @@
 Pulls season-average per-game stats from the NBA Stats API, applies fantasy
 scoring weights, and upserts PlayerProjection rows for all 3 playoff weeks.
 
-Fantasy scoring weights below match a common H2H Points league.
-Edit SCORING to match your actual league settings.
+The player list is now DB-driven: ingest_projections reads active Player rows
+so adding/removing players via the roster API is automatically reflected.
+The hardcoded ROSTER is only used for the initial seed (empty DB).
 """
 
 import asyncio
@@ -11,14 +12,14 @@ import os
 from typing import Any
 
 from nba_api.stats.endpoints import leaguedashplayerstats
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Player, PlayerProjection, TeamSchedule
 
 # ---------------------------------------------------------------------------
-# Roster (single source of truth — mirrors CLAUDE.md)
+# Initial roster seed (used only when the players table is empty)
 # ---------------------------------------------------------------------------
 ROSTER: list[dict[str, Any]] = [
     {"name": "James Harden",            "team": "CLE", "positions": ["PG", "SG"]},
@@ -37,7 +38,7 @@ ROSTER: list[dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Fantasy scoring weights — adjust to match your league
+# Fantasy scoring weights
 # ---------------------------------------------------------------------------
 SCORING: dict[str, float] = {
     "pts": 1.0,
@@ -46,14 +47,38 @@ SCORING: dict[str, float] = {
     "stl": 3.0,
     "blk": 3.0,
     "tov": -1.0,
-    "tpm": 1.0,   # 3-pointers made
+    "tpm": 1.0,
 }
 
 # ---------------------------------------------------------------------------
-# NBA Stats API — uses nba_api package (handles headers/auth automatically)
+# NBA position → fantasy position mapping
 # ---------------------------------------------------------------------------
+_NBA_POS_MAP: dict[str, list[str]] = {
+    "G":              ["PG", "SG"],
+    "F":              ["SF", "PF"],
+    "C":              ["C"],
+    "G-F":            ["SG", "SF"],
+    "F-G":            ["SG", "SF"],
+    "F-C":            ["PF", "C"],
+    "C-F":            ["PF", "C"],
+    "Guard":          ["PG", "SG"],
+    "Forward":        ["SF", "PF"],
+    "Center":         ["C"],
+    "Guard-Forward":  ["SG", "SF"],
+    "Forward-Guard":  ["SG", "SF"],
+    "Forward-Center": ["PF", "C"],
+    "Center-Forward": ["PF", "C"],
+}
 
 
+def map_nba_position(nba_pos: str) -> list[str]:
+    """Map an NBA API position string to fantasy-league positions."""
+    return _NBA_POS_MAP.get(nba_pos, ["SF", "PF"])
+
+
+# ---------------------------------------------------------------------------
+# Stats helpers
+# ---------------------------------------------------------------------------
 def compute_fantasy_ppg(stats: dict[str, float]) -> float:
     return (
         stats["pts"] * SCORING["pts"]
@@ -66,16 +91,10 @@ def compute_fantasy_ppg(stats: dict[str, float]) -> float:
     )
 
 
-async def fetch_nba_player_stats(
-    season: str | None = None,
-) -> dict[str, dict[str, float]]:
-    """
-    Returns {player_name: {pts, reb, ast, stl, blk, tov, tpm, fg_pct, ft_pct}}
-    using NBA season-average per-game stats via nba_api.
-    """
+async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[str, float]]:
+    """Returns {player_name: {pts, reb, ast, stl, blk, tov, tpm, fg_pct, ft_pct}}."""
     season = season or os.getenv("NBA_SEASON", "2025-26")
 
-    # nba_api is synchronous — run in a thread so we don't block the event loop
     def _fetch() -> dict[str, dict[str, float]]:
         endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
             season=season,
@@ -83,9 +102,9 @@ async def fetch_nba_player_stats(
             timeout=60,
         )
         df = endpoint.get_data_frames()[0]
-        stats_by_name: dict[str, dict[str, float]] = {}
+        result: dict[str, dict[str, float]] = {}
         for _, row in df.iterrows():
-            stats_by_name[row["PLAYER_NAME"]] = {
+            result[row["PLAYER_NAME"]] = {
                 "pts":    float(row.get("PTS")    or 0),
                 "reb":    float(row.get("REB")    or 0),
                 "ast":    float(row.get("AST")    or 0),
@@ -96,16 +115,16 @@ async def fetch_nba_player_stats(
                 "fg_pct": float(row.get("FG_PCT") or 0),
                 "ft_pct": float(row.get("FT_PCT") or 0),
             }
-        return stats_by_name
+        return result
 
     return await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
 
-async def seed_players(db: AsyncSession) -> dict[str, int]:
-    """
-    Upsert all roster players and return a {name: player_id} mapping.
-    """
-    name_to_id: dict[str, int] = {}
+# ---------------------------------------------------------------------------
+# Seed helpers
+# ---------------------------------------------------------------------------
+async def seed_players(db: AsyncSession) -> None:
+    """Upsert initial ROSTER players (only called when players table is empty)."""
     for p in ROSTER:
         stmt = (
             insert(Player)
@@ -114,30 +133,37 @@ async def seed_players(db: AsyncSession) -> dict[str, int]:
                 constraint="uq_players_name",
                 set_={"team": p["team"], "positions": p["positions"], "is_active": True},
             )
-            .returning(Player.id)
         )
-        result = await db.execute(stmt)
-        name_to_id[p["name"]] = result.scalar_one()
+        await db.execute(stmt)
     await db.commit()
-    return name_to_id
 
 
-async def ingest_projections(
-    db: AsyncSession,
-    season: str | None = None,
-) -> None:
+# ---------------------------------------------------------------------------
+# Main ingestion pipeline
+# ---------------------------------------------------------------------------
+async def ingest_projections(db: AsyncSession, season: str | None = None) -> None:
     """
-    Full pipeline:
-      1. Seed / update players in DB
-      2. Fetch season averages from NBA Stats API
-      3. Upsert PlayerProjection for each player × each of the 3 playoff weeks
-    Requires TeamSchedule rows to already exist (run ingest_schedule first).
+    1. If no active players exist yet, seed from hardcoded ROSTER.
+    2. Fetch season averages from NBA Stats API for ALL league players.
+    3. Upsert PlayerProjection for each active roster player × 3 playoff weeks.
     """
-    name_to_id = await seed_players(db)
+    # Seed on first run
+    active_count: int = (
+        await db.execute(select(func.count(Player.id)).where(Player.is_active == True))
+    ).scalar_one()
+    if active_count == 0:
+        await seed_players(db)
+
+    # Load all active roster players from DB
+    active_players = (
+        await db.execute(select(Player).where(Player.is_active == True))
+    ).scalars().all()
+
+    # Fetch NBA stats for the whole league
     nba_stats = await fetch_nba_player_stats(season)
 
-    # Load game counts for all roster teams
-    roster_teams = {p["team"] for p in ROSTER}
+    # Build games_lookup from TeamSchedule
+    roster_teams = {p.team for p in active_players}
     schedule_rows = (
         await db.execute(
             select(TeamSchedule).where(TeamSchedule.team.in_(roster_teams))
@@ -148,23 +174,22 @@ async def ingest_projections(
     }
 
     missing: list[str] = []
-    for player in ROSTER:
-        player_id = name_to_id[player["name"]]
-        stats = nba_stats.get(player["name"])
+    for player in active_players:
+        stats = nba_stats.get(player.name)
         if not stats:
-            missing.append(player["name"])
+            missing.append(player.name)
             continue
 
         fantasy_ppg = round(compute_fantasy_ppg(stats), 3)
 
         for week_num in (21, 22, 23):
-            games = games_lookup.get((player["team"], week_num), 0)
+            games = games_lookup.get((player.team, week_num), 0)
             projected_total = round(fantasy_ppg * games, 2)
 
             stmt = (
                 insert(PlayerProjection)
                 .values(
-                    player_id=player_id,
+                    player_id=player.id,
                     week_num=week_num,
                     games_count=games,
                     pts_pg=stats["pts"],
@@ -203,7 +228,5 @@ async def ingest_projections(
 
     if missing:
         print(f"[projections] WARNING — no NBA stats found for: {', '.join(missing)}")
-    print(
-        f"[projections] Ingested projections for "
-        f"{len(ROSTER) - len(missing)}/{len(ROSTER)} players × 3 weeks."
-    )
+    total = len(active_players)
+    print(f"[projections] Ingested {total - len(missing)}/{total} players × 3 weeks.")
