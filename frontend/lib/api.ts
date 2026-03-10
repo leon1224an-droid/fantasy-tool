@@ -111,6 +111,10 @@ export function getSchedule(): Promise<ScheduleRow[]> {
   return apiFetch<ScheduleRow[]>("/schedule");
 }
 
+export function getAllSchedule(): Promise<ScheduleRow[]> {
+  return apiFetch<ScheduleRow[]>("/schedule/all");
+}
+
 export function getProjections(week?: number): Promise<ProjectionRow[]> {
   const query = week != null ? `?week=${week}` : "";
   return apiFetch<ProjectionRow[]>(`/projections${query}`);

@@ -106,6 +106,19 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="compare"
+        options={{
+          title: "Compare",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons
+              name="scale-balance"
+              size={size}
+              color={color}
+            />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

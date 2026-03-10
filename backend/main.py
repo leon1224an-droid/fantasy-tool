@@ -337,6 +337,26 @@ async def get_schedule(db: AsyncSession = Depends(get_db)):
     ]
 
 
+@app.get("/schedule/all", response_model=list[ScheduleRow], tags=["data"])
+async def get_schedule_all(db: AsyncSession = Depends(get_db)):
+    """Return stored game counts for ALL teams in the DB across playoff weeks."""
+    rows = (
+        await db.execute(
+            select(TeamSchedule).order_by(TeamSchedule.week_num, TeamSchedule.team)
+        )
+    ).scalars().all()
+    return [
+        ScheduleRow(
+            team=r.team,
+            week_num=r.week_num,
+            week_start=r.week_start.isoformat(),
+            week_end=r.week_end.isoformat(),
+            games_count=r.games_count,
+        )
+        for r in rows
+    ]
+
+
 @app.get("/projections", response_model=list[ProjectionRow], tags=["data"])
 async def get_projections(
     week: int | None = Query(default=None, ge=21, le=23),

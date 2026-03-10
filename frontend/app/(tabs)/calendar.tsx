@@ -30,7 +30,7 @@ export default function CalendarScreen() {
         <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />
       )}
 
-      {weekData && <WeekTable weekData={weekData} />}
+      {weekData && <WeekTable weekData={weekData} theme={theme} />}
 
       {!isLoading && !error && !weekData && (
         <Text style={styles.emptyText}>
@@ -44,8 +44,13 @@ export default function CalendarScreen() {
 // ---------------------------------------------------------------------------
 // Horizontal week table
 // ---------------------------------------------------------------------------
-function WeekTable({ weekData }: { weekData: WeeklyCalendarResponse }) {
+function WeekTable({ weekData, theme }: { weekData: WeeklyCalendarResponse; theme: ReturnType<typeof useTheme> }) {
   const days = weekData.days;
+
+  // Weekly aggregate totals
+  const totalGames = days.reduce((s, d) => s + d.players_available, 0);
+  const totalStarting = days.reduce((s, d) => s + d.players_starting, 0);
+  const totalBenched = totalGames - totalStarting;
 
   const getCellPlayer = (day: DailyLineupResponse, slot: string): string | null => {
     if (day.players_available === 0) return null;
@@ -63,6 +68,13 @@ function WeekTable({ weekData }: { weekData: WeeklyCalendarResponse }) {
 
   return (
     <ScrollView contentContainerStyle={styles.scrollOuter} showsVerticalScrollIndicator={false}>
+      {/* Weekly totals summary */}
+      <View style={styles.weekSummary}>
+        <WeekStatBox label="Total Games" value={totalGames} color="#1565c0" />
+        <WeekStatBox label="Starting" value={totalStarting} color="#2e7d32" />
+        <WeekStatBox label="Benched" value={totalBenched} color={totalBenched > 0 ? "#e65100" : "#9e9e9e"} />
+      </View>
+
       <Surface style={styles.tableSurface} elevation={1}>
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
           <View>
@@ -175,6 +187,15 @@ function WeekTable({ weekData }: { weekData: WeeklyCalendarResponse }) {
   );
 }
 
+function WeekStatBox({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <View style={[styles.weekStatBox, { borderColor: color + "40" }]}>
+      <Text style={[styles.weekStatValue, { color }]}>{value}</Text>
+      <Text style={styles.weekStatLabel}>{label}</Text>
+    </View>
+  );
+}
+
 function LegendDot({ color, label }: { color: string; label: string }) {
   return (
     <View style={styles.legendItem}>
@@ -194,6 +215,14 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   emptyText: { color: "#888", textAlign: "center", margin: 32, fontSize: 14 },
   scrollOuter: { padding: 16, paddingBottom: 40 },
+
+  weekSummary: { flexDirection: "row", gap: 10, marginBottom: 12 },
+  weekStatBox: {
+    flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 12,
+    backgroundColor: "#fff", borderWidth: 1,
+  },
+  weekStatValue: { fontSize: 24, fontWeight: "800", lineHeight: 28 },
+  weekStatLabel: { fontSize: 11, color: "#888", marginTop: 2 },
 
   tableSurface: {
     borderRadius: 14,
