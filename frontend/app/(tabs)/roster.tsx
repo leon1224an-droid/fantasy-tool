@@ -19,6 +19,7 @@ import {
   getPlayerInfo,
   addToRoster,
   removeFromRoster,
+  clearRoster,
   updateRosterPositions,
   getSavedRosters,
   createSavedRoster,
@@ -82,19 +83,37 @@ function ActiveRoster() {
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState("");
+  const [showLoadPicker, setShowLoadPicker] = useState(false);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["roster"],
     queryFn: getRoster,
   });
 
+  const { data: savedRosters } = useQuery({
+    queryKey: ["saved-rosters"],
+    queryFn: getSavedRosters,
+  });
+
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["roster"] });
+    queryClient.invalidateQueries({ queryKey: ["player-grid"] });
+    queryClient.invalidateQueries({ queryKey: ["calendar"] });
+  };
+
   const removeMutation = useMutation({
     mutationFn: removeFromRoster,
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["roster"] });
-      queryClient.invalidateQueries({ queryKey: ["player-grid"] });
-      queryClient.invalidateQueries({ queryKey: ["calendar"] });
-    },
+    onSuccess: invalidateAll,
+  });
+
+  const clearMutation = useMutation({
+    mutationFn: clearRoster,
+    onSuccess: invalidateAll,
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: activateSavedRoster,
+    onSuccess: () => { invalidateAll(); setShowLoadPicker(false); },
   });
 
   const saveRosterMutation = useMutation({
@@ -121,6 +140,18 @@ function ActiveRoster() {
     });
   };
 
+  const handleClearAll = () => {
+    const msg = "Remove all players from your active roster?";
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) clearMutation.mutate();
+    } else {
+      Alert.alert("Clear Roster", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Clear All", style: "destructive", onPress: () => clearMutation.mutate() },
+      ]);
+    }
+  };
+
   return (
     <Surface style={styles.card} elevation={1}>
       <View style={styles.cardHeader}>
@@ -129,15 +160,62 @@ function ActiveRoster() {
           <Text style={[styles.countBadge, { color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
             {count}/13
           </Text>
+          {/* Load saved roster */}
+          <IconButton
+            icon="folder-open-outline"
+            size={20}
+            iconColor={theme.colors.primary}
+            onPress={() => { setShowLoadPicker((v) => !v); setSaving(false); }}
+            style={styles.actionBtn}
+          />
+          {/* Save current roster */}
           <IconButton
             icon="content-save-outline"
             size={20}
             iconColor={theme.colors.primary}
-            onPress={() => setSaving((v) => !v)}
-            style={styles.chevron}
+            onPress={() => { setSaving((v) => !v); setShowLoadPicker(false); }}
+            style={styles.actionBtn}
           />
+          {/* Clear all */}
+          {count > 0 && (
+            <IconButton
+              icon="trash-can-outline"
+              size={20}
+              iconColor="#e65100"
+              onPress={handleClearAll}
+              disabled={clearMutation.isPending}
+              style={styles.actionBtn}
+            />
+          )}
         </View>
       </View>
+
+      {/* Load saved roster picker */}
+      {showLoadPicker && (
+        <View style={styles.loadPickerPanel}>
+          {!savedRosters || savedRosters.length === 0 ? (
+            <Text style={styles.emptyText}>No saved rosters yet.</Text>
+          ) : (
+            savedRosters.map((r) => (
+              <TouchableOpacity
+                key={r.id}
+                style={styles.loadPickerRow}
+                onPress={() => activateMutation.mutate(r.id)}
+                activeOpacity={0.6}
+              >
+                <View style={styles.loadPickerInfo}>
+                  <Text style={styles.loadPickerName}>{r.name}</Text>
+                  <Text style={styles.loadPickerMeta}>{r.players.length} players</Text>
+                </View>
+                {activateMutation.isPending && activateMutation.variables === r.id
+                  ? <ActivityIndicator size={16} />
+                  : <IconButton icon="swap-horizontal" size={18} iconColor="#1565c0" style={styles.actionBtn} />
+                }
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      )}
 
       {/* Save-as input */}
       {saving && (
@@ -168,7 +246,9 @@ function ActiveRoster() {
         <Text style={styles.errorText}>{(saveRosterMutation.error as Error).message}</Text>
       )}
 
-      {count === 0 && <Text style={styles.emptyText}>No players yet — add some above.</Text>}
+      {count === 0 && !showLoadPicker && (
+        <Text style={styles.emptyText}>No players yet — add some above.</Text>
+      )}
 
       {data?.map((player, idx) => (
         <RosterRow
@@ -575,6 +655,13 @@ const styles = StyleSheet.create({
   // Active roster header
   rosterHeaderRight: { flexDirection: "row", alignItems: "center" },
   countBadge: { fontSize: 13, fontWeight: "700" },
+
+  // Load picker
+  loadPickerPanel: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#ebebeb", paddingBottom: 4 },
+  loadPickerRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f5f5f5" },
+  loadPickerInfo: { flex: 1 },
+  loadPickerName: { fontSize: 13, fontWeight: "600", color: "#1a1a1a" },
+  loadPickerMeta: { fontSize: 11, color: "#888" },
 
   // Save-as row
   saveRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 12 },

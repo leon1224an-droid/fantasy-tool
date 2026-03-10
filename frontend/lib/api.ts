@@ -189,6 +189,10 @@ export function removeFromRoster(playerName: string): Promise<void> {
   });
 }
 
+export function clearRoster(): Promise<void> {
+  return apiFetch<void>("/roster", { method: "DELETE" });
+}
+
 // Saved rosters
 export interface SavedRosterEntry {
   name: string;

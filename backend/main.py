@@ -315,8 +315,11 @@ async def run_ingest_all(db: AsyncSession = Depends(get_db)):
 
 @app.get("/schedule", response_model=list[ScheduleRow], tags=["data"])
 async def get_schedule(db: AsyncSession = Depends(get_db)):
-    """Return stored game counts for all roster teams across playoff weeks."""
-    roster_teams = {p["team"] for p in ROSTER}
+    """Return stored game counts for all active-roster teams across playoff weeks."""
+    active_players = (
+        await db.execute(select(Player).where(Player.is_active == True))
+    ).scalars().all()
+    roster_teams = {p.team for p in active_players} or {p["team"] for p in ROSTER}
     rows = (
         await db.execute(
             select(TeamSchedule)
@@ -608,6 +611,14 @@ async def remove_from_roster(player_name: str, db: AsyncSession = Depends(get_db
         raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found.")
     await db.commit()
     return {"status": "ok", "removed": player_name}
+
+
+@app.delete("/roster", tags=["roster"])
+async def clear_roster(db: AsyncSession = Depends(get_db)):
+    """Deactivate all active roster players at once."""
+    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+    await db.commit()
+    return {"status": "ok"}
 
 
 class UpdatePositionsRequest(BaseModel):
