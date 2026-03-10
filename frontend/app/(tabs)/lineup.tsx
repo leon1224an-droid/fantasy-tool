@@ -20,10 +20,6 @@ export default function LineupScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Text style={[styles.title, { color: theme.colors.onBackground }]}>
-        Optimal Lineup
-      </Text>
-
       <WeekSelector value={week} onChange={setWeek} />
 
       {(isLoading || error) && (
@@ -53,12 +49,6 @@ export default function LineupScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  title: {
-    fontSize: 22,
-    fontWeight: "700",
-    marginTop: 16,
-    marginHorizontal: 16,
-  },
   emptyText: {
     color: "#888",
     textAlign: "center",

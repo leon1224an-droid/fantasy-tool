@@ -26,10 +26,6 @@ export default function ProjectionsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Text style={[styles.title, { color: theme.colors.onBackground }]}>
-        Player Projections
-      </Text>
-
       <WeekSelector value={week} onChange={setWeek} />
 
       {(isLoading || error) && (
@@ -60,12 +56,6 @@ export default function ProjectionsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  title: {
-    fontSize: 22,
-    fontWeight: "700",
-    marginTop: 16,
-    marginHorizontal: 16,
-  },
   list: { paddingBottom: 24 },
   emptyText: {
     color: "#888",

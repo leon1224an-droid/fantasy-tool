@@ -590,6 +590,29 @@ async def remove_from_roster(player_name: str, db: AsyncSession = Depends(get_db
     return {"status": "ok", "removed": player_name}
 
 
+class UpdatePositionsRequest(BaseModel):
+    positions: list[str]
+
+
+@app.patch("/roster/{player_name}/positions", response_model=RosterPlayer, tags=["roster"])
+async def update_roster_positions(
+    player_name: str, body: UpdatePositionsRequest, db: AsyncSession = Depends(get_db)
+):
+    """Update the fantasy positions for an existing roster player."""
+    result = await db.execute(
+        update(Player)
+        .where(Player.name == player_name, Player.is_active == True)
+        .values(positions=body.positions)
+    )
+    if result.rowcount == 0:
+        raise HTTPException(status_code=404, detail=f"Active player '{player_name}' not found.")
+    await db.commit()
+    player = (
+        await db.execute(select(Player).where(Player.name == player_name))
+    ).scalar_one()
+    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active)
+
+
 @app.get("/player-grid", response_model=list[PlayerGridRow], tags=["data"])
 async def get_player_grid(db: AsyncSession = Depends(get_db)):
     """

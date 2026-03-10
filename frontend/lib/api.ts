@@ -184,3 +184,17 @@ export function removeFromRoster(playerName: string): Promise<void> {
     method: "DELETE",
   });
 }
+
+export function updateRosterPositions(
+  playerName: string,
+  positions: string[]
+): Promise<RosterPlayer> {
+  return apiFetch<RosterPlayer>(
+    `/roster/${encodeURIComponent(playerName)}/positions`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ positions }),
+    }
+  );
+}

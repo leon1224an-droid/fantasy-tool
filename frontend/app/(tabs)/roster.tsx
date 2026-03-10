@@ -1,13 +1,13 @@
 import React, { useState, useCallback } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
   Button,
   Chip,
   Divider,
   IconButton,
-  List,
   Searchbar,
+  Surface,
   Text,
   useTheme,
 } from "react-native-paper";
@@ -18,6 +18,7 @@ import {
   getPlayerInfo,
   addToRoster,
   removeFromRoster,
+  updateRosterPositions,
   RosterPlayer,
   NBAPlayerSearchResult,
   NBAPlayerInfo,
@@ -28,33 +29,44 @@ const POSITION_OPTIONS = ["PG", "SG", "SF", "PF", "C"];
 
 export default function RosterScreen() {
   const theme = useTheme();
+  const [searchExpanded, setSearchExpanded] = useState(false);
 
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
       keyboardShouldPersistTaps="handled"
+      contentContainerStyle={styles.scrollContent}
     >
-      <Text style={[styles.title, { color: theme.colors.onBackground }]}>
-        Roster Management
-      </Text>
-      <Text style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}>
-        Up to 13 players — add or remove active NBA players
-      </Text>
+      {/* Add Player — at the top */}
+      <Surface style={styles.card} elevation={1}>
+        <TouchableOpacity
+          onPress={() => setSearchExpanded((v) => !v)}
+          style={styles.addHeader}
+          activeOpacity={0.7}
+        >
+          <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+            Add Player
+          </Text>
+          <IconButton
+            icon={searchExpanded ? "chevron-up" : "chevron-down"}
+            size={20}
+            iconColor={theme.colors.onSurfaceVariant}
+            style={styles.chevron}
+          />
+        </TouchableOpacity>
+        {searchExpanded && (
+          <PlayerSearch onAdded={() => setSearchExpanded(false)} />
+        )}
+      </Surface>
 
+      {/* Current roster */}
       <CurrentRoster />
-
-      <Divider style={styles.divider} />
-
-      <Text style={[styles.sectionTitle, { color: theme.colors.onBackground }]}>
-        Add Player
-      </Text>
-      <PlayerSearch />
     </ScrollView>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Current roster list
+// Current roster
 // ---------------------------------------------------------------------------
 function CurrentRoster() {
   const theme = useTheme();
@@ -67,88 +79,186 @@ function CurrentRoster() {
 
   const removeMutation = useMutation({
     mutationFn: removeFromRoster,
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["roster"] }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["roster"] });
+      queryClient.invalidateQueries({ queryKey: ["player-grid"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar"] });
+    },
   });
 
   if (isLoading || error) {
-    return (
-      <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />
-    );
+    return <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />;
   }
 
   const count = data?.length ?? 0;
 
   return (
-    <View style={styles.rosterSection}>
-      <Text style={[styles.rosterCount, { color: theme.colors.onSurfaceVariant }]}>
-        {count}/13 players
-      </Text>
-
-      {data && data.length === 0 && (
-        <Text style={styles.emptyText}>
-          No players on roster. Add players below.
+    <Surface style={styles.card} elevation={1}>
+      <View style={styles.rosterHeader}>
+        <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+          My Roster
         </Text>
+        <Text style={[styles.countBadge, {
+          color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant,
+        }]}>
+          {count}/13
+        </Text>
+      </View>
+
+      {count === 0 && (
+        <Text style={styles.emptyText}>No players yet — add some above.</Text>
       )}
 
-      {data?.map((player) => (
+      {data?.map((player, idx) => (
         <RosterRow
           key={player.name}
           player={player}
+          isLast={idx === data.length - 1}
           onRemove={() => removeMutation.mutate(player.name)}
           removing={removeMutation.isPending && removeMutation.variables === player.name}
         />
       ))}
-    </View>
+    </Surface>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Single roster row with inline position editor
+// ---------------------------------------------------------------------------
 function RosterRow({
   player,
+  isLast,
   onRemove,
   removing,
 }: {
   player: RosterPlayer;
+  isLast: boolean;
   onRemove: () => void;
   removing: boolean;
 }) {
+  const theme = useTheme();
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [positions, setPositions] = useState<string[]>(player.positions);
+
+  const saveMutation = useMutation({
+    mutationFn: () => updateRosterPositions(player.name, positions),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["roster"] });
+      setEditing(false);
+    },
+  });
+
+  const togglePos = (pos: string) =>
+    setPositions((prev) =>
+      prev.includes(pos) ? prev.filter((p) => p !== pos) : [...prev, pos]
+    );
+
   return (
-    <List.Item
-      title={player.name}
-      description={`${player.team} · ${player.positions.join("/")}${!player.is_active ? " · Inactive" : ""}`}
-      titleStyle={styles.playerName}
-      descriptionStyle={styles.playerMeta}
-      left={() => (
-        <View style={styles.positionBadges}>
-          {player.positions.slice(0, 2).map((p) => (
-            <Chip key={p} compact style={styles.posBadge} textStyle={styles.posBadgeText}>
-              {p}
-            </Chip>
-          ))}
+    <View style={[styles.rosterRow, !isLast && styles.rosterRowBorder]}>
+      {/* Main row */}
+      <View style={styles.rosterRowMain}>
+        {/* Name + meta */}
+        <View style={styles.rosterPlayerInfo}>
+          <Text style={styles.rosterPlayerName} numberOfLines={1}>
+            {player.name}
+          </Text>
+          <View style={styles.rosterMeta}>
+            <Text style={[styles.teamTag, { color: theme.colors.onSurfaceVariant }]}>
+              {player.team}
+            </Text>
+            <Text style={styles.metaDot}>·</Text>
+            {player.positions.map((pos) => (
+              <Text key={pos} style={[styles.posTag, { color: theme.colors.primary }]}>
+                {pos}
+              </Text>
+            ))}
+          </View>
+        </View>
+
+        {/* Actions */}
+        <View style={styles.rosterActions}>
+          <IconButton
+            icon="pencil-outline"
+            size={18}
+            iconColor={editing ? theme.colors.primary : theme.colors.onSurfaceVariant}
+            onPress={() => {
+              setPositions(player.positions);
+              setEditing((v) => !v);
+            }}
+            style={styles.actionBtn}
+          />
+          {removing ? (
+            <ActivityIndicator size={16} style={styles.actionBtn} />
+          ) : (
+            <IconButton
+              icon="close-circle-outline"
+              size={18}
+              iconColor="#e65100"
+              onPress={onRemove}
+              style={styles.actionBtn}
+            />
+          )}
+        </View>
+      </View>
+
+      {/* Inline position editor */}
+      {editing && (
+        <View style={styles.editPanel}>
+          <Text style={[styles.editLabel, { color: theme.colors.onSurfaceVariant }]}>
+            Tap to toggle positions:
+          </Text>
+          <View style={styles.posChipRow}>
+            {POSITION_OPTIONS.map((pos) => (
+              <Chip
+                key={pos}
+                selected={positions.includes(pos)}
+                onPress={() => togglePos(pos)}
+                compact
+                showSelectedOverlay
+                style={styles.posChip}
+                textStyle={styles.posChipText}
+              >
+                {pos}
+              </Chip>
+            ))}
+          </View>
+          <View style={styles.editActions}>
+            <Button
+              mode="text"
+              compact
+              onPress={() => setEditing(false)}
+              textColor={theme.colors.onSurfaceVariant}
+            >
+              Cancel
+            </Button>
+            <Button
+              mode="contained-tonal"
+              compact
+              onPress={() => saveMutation.mutate()}
+              loading={saveMutation.isPending}
+              disabled={saveMutation.isPending || positions.length === 0}
+            >
+              Save
+            </Button>
+          </View>
+          {saveMutation.isError && (
+            <Text style={styles.errorText}>
+              {(saveMutation.error as Error).message}
+            </Text>
+          )}
         </View>
       )}
-      right={() =>
-        removing ? (
-          <ActivityIndicator size="small" style={styles.rowSpinner} />
-        ) : (
-          <IconButton
-            icon="close-circle"
-            iconColor="#e65100"
-            size={22}
-            onPress={onRemove}
-          />
-        )
-      }
-      style={styles.rosterRow}
-    />
+    </View>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Player search + add flow
+// Search + add flow
 // ---------------------------------------------------------------------------
 type AddStep = "search" | "confirm";
 
-function PlayerSearch() {
+function PlayerSearch({ onAdded }: { onAdded: () => void }) {
   const theme = useTheme();
   const queryClient = useQueryClient();
 
@@ -177,6 +287,7 @@ function PlayerSearch() {
       queryClient.invalidateQueries({ queryKey: ["player-grid"] });
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
       resetFlow();
+      onAdded();
     },
   });
 
@@ -221,34 +332,41 @@ function PlayerSearch() {
     });
   }, [playerInfo, customPositions, addMutation]);
 
-  // Confirm step
+  // ---- Confirm step ----
   if (step === "confirm") {
     return (
       <View style={styles.confirmPanel}>
-        <Text style={[styles.confirmName, { color: theme.colors.onSurface }]}>
-          {selectedResult?.name}
-        </Text>
+        <View style={styles.confirmHeader}>
+          <View>
+            <Text style={[styles.confirmName, { color: theme.colors.onSurface }]}>
+              {selectedResult?.name}
+            </Text>
+            {playerInfo && (
+              <Text style={[styles.confirmMeta, { color: theme.colors.onSurfaceVariant }]}>
+                {playerInfo.team} · {playerInfo.nba_position}
+              </Text>
+            )}
+          </View>
+          <IconButton icon="arrow-left" size={20} onPress={resetFlow} />
+        </View>
 
         {infoLoading && <ActivityIndicator style={styles.spinner} />}
         {infoError && <Text style={styles.errorText}>{infoError}</Text>}
 
         {playerInfo && (
           <>
-            <Text style={[styles.confirmMeta, { color: theme.colors.onSurfaceVariant }]}>
-              Team: {playerInfo.team} · NBA Position: {playerInfo.nba_position}
+            <Text style={[styles.posLabel, { color: theme.colors.onSurfaceVariant }]}>
+              Fantasy positions:
             </Text>
-
-            <Text style={[styles.posLabel, { color: theme.colors.onSurface }]}>
-              Fantasy positions (tap to toggle):
-            </Text>
-            <View style={styles.posRow}>
+            <View style={styles.posChipRow}>
               {POSITION_OPTIONS.map((pos) => (
                 <Chip
                   key={pos}
                   selected={customPositions.includes(pos)}
                   onPress={() => togglePosition(pos)}
-                  style={styles.posChip}
                   showSelectedOverlay
+                  style={styles.posChip}
+                  textStyle={styles.posChipText}
                 >
                   {pos}
                 </Chip>
@@ -256,35 +374,26 @@ function PlayerSearch() {
             </View>
 
             {rosterCount >= 13 && (
-              <Text style={styles.limitWarning}>
-                Roster is full (13/13). Remove a player first.
-              </Text>
+              <Text style={styles.warningText}>Roster is full (13/13). Remove a player first.</Text>
             )}
             {rosterNames.has(playerInfo.name) && (
-              <Text style={styles.limitWarning}>
-                {playerInfo.name} is already on your roster.
-              </Text>
+              <Text style={styles.warningText}>{playerInfo.name} is already on your roster.</Text>
             )}
 
-            <View style={styles.confirmButtons}>
-              <Button mode="outlined" onPress={resetFlow} style={styles.cancelBtn}>
-                Cancel
-              </Button>
-              <Button
-                mode="contained"
-                onPress={handleAdd}
-                loading={addMutation.isPending}
-                disabled={
-                  addMutation.isPending ||
-                  customPositions.length === 0 ||
-                  rosterCount >= 13 ||
-                  rosterNames.has(playerInfo.name)
-                }
-                style={styles.addBtn}
-              >
-                Add to Roster
-              </Button>
-            </View>
+            <Button
+              mode="contained"
+              onPress={handleAdd}
+              loading={addMutation.isPending}
+              disabled={
+                addMutation.isPending ||
+                customPositions.length === 0 ||
+                rosterCount >= 13 ||
+                rosterNames.has(playerInfo.name)
+              }
+              style={styles.addBtn}
+            >
+              Add to Roster
+            </Button>
 
             {addMutation.isError && (
               <Text style={styles.errorText}>
@@ -297,38 +406,40 @@ function PlayerSearch() {
     );
   }
 
-  // Search step
+  // ---- Search step ----
   return (
     <View style={styles.searchPanel}>
       <Searchbar
-        placeholder="Search NBA player..."
+        placeholder="Search by name…"
         value={query}
         onChangeText={setQuery}
         style={styles.searchBar}
         loading={searching}
+        elevation={0}
       />
 
-      {query.length >= 2 && searchResults && searchResults.length === 0 && !searching && (
-        <Text style={styles.noResults}>No players found for "{query}"</Text>
+      {query.length >= 2 && !searching && searchResults?.length === 0 && (
+        <Text style={styles.noResults}>No active players found for "{query}"</Text>
       )}
 
       {searchResults?.slice(0, 8).map((result) => {
         const onRoster = rosterNames.has(result.name);
         return (
-          <List.Item
+          <TouchableOpacity
             key={result.player_id}
-            title={result.name}
-            description={onRoster ? "Already on roster" : result.is_active ? "Active" : "Inactive"}
-            titleStyle={[styles.resultName, onRoster && styles.dimText]}
-            descriptionStyle={[onRoster ? styles.onRosterText : styles.activeText]}
             onPress={!onRoster ? () => handleSelectPlayer(result) : undefined}
-            right={() =>
-              onRoster ? null : (
-                <IconButton icon="plus-circle" iconColor="#6750a4" size={22} />
-              )
-            }
-            style={[styles.resultRow, onRoster && styles.resultRowDim]}
-          />
+            activeOpacity={onRoster ? 1 : 0.6}
+            style={[styles.searchResult, onRoster && styles.searchResultDim]}
+          >
+            <Text style={[styles.resultName, onRoster && { color: "#aaa" }]}>
+              {result.name}
+            </Text>
+            {onRoster ? (
+              <Text style={styles.onRosterLabel}>On roster</Text>
+            ) : (
+              <IconButton icon="plus" size={16} iconColor={theme.colors.primary} style={styles.plusBtn} />
+            )}
+          </TouchableOpacity>
         );
       })}
     </View>
@@ -337,45 +448,91 @@ function PlayerSearch() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  title: { fontSize: 22, fontWeight: "700", marginTop: 16, marginHorizontal: 16 },
-  subtitle: { fontSize: 13, marginHorizontal: 16, marginBottom: 12 },
-  sectionTitle: { fontSize: 17, fontWeight: "700", marginHorizontal: 16, marginTop: 4, marginBottom: 8 },
-  divider: { marginVertical: 16 },
+  scrollContent: { padding: 16, gap: 12, paddingBottom: 40 },
 
-  // Roster list
-  rosterSection: { marginHorizontal: 8 },
-  rosterCount: { fontSize: 13, marginLeft: 16, marginBottom: 4 },
-  emptyText: { color: "#888", textAlign: "center", marginVertical: 20, fontSize: 14 },
-  rosterRow: { borderBottomWidth: 1, borderBottomColor: "#f0f0f0" },
-  playerName: { fontWeight: "600", fontSize: 14 },
-  playerMeta: { fontSize: 12, color: "#888" },
-  positionBadges: { flexDirection: "column", justifyContent: "center", gap: 2, paddingLeft: 8 },
-  posBadge: { height: 20, marginVertical: 1 },
-  posBadgeText: { fontSize: 9 },
-  rowSpinner: { marginRight: 12, alignSelf: "center" },
+  card: {
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: "#fff",
+  },
 
-  // Search
-  searchPanel: { marginHorizontal: 8, marginBottom: 40 },
-  searchBar: { marginHorizontal: 8, marginBottom: 8 },
-  noResults: { color: "#888", textAlign: "center", margin: 16 },
-  resultRow: { borderBottomWidth: 1, borderBottomColor: "#f0f0f0" },
-  resultRowDim: { opacity: 0.5 },
-  resultName: { fontWeight: "600", fontSize: 14 },
-  dimText: { color: "#aaa" },
-  onRosterText: { color: "#6750a4", fontSize: 12 },
-  activeText: { color: "#2e7d32", fontSize: 12 },
+  // Add player header
+  addHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  chevron: { margin: 0 },
 
-  // Confirm
-  confirmPanel: { margin: 16, padding: 16, backgroundColor: "#f5f0ff", borderRadius: 12 },
-  confirmName: { fontSize: 18, fontWeight: "700", marginBottom: 4 },
-  confirmMeta: { fontSize: 13, marginBottom: 12 },
-  posLabel: { fontSize: 14, fontWeight: "600", marginBottom: 8 },
-  posRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 },
-  posChip: { marginBottom: 4 },
-  confirmButtons: { flexDirection: "row", gap: 12, marginTop: 4 },
-  cancelBtn: { flex: 1 },
-  addBtn: { flex: 1 },
-  spinner: { marginVertical: 16 },
-  errorText: { color: "#c62828", fontSize: 13, marginTop: 8 },
-  limitWarning: { color: "#e65100", fontSize: 13, fontWeight: "600", marginBottom: 8 },
+  // Section headings
+  sectionTitle: { fontSize: 15, fontWeight: "700", letterSpacing: 0.1 },
+
+  // Roster header
+  rosterHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f0f0f0",
+  },
+  countBadge: { fontSize: 13, fontWeight: "700" },
+  emptyText: { color: "#aaa", textAlign: "center", paddingVertical: 20, fontSize: 13 },
+
+  // Roster rows
+  rosterRow: { paddingHorizontal: 16, paddingVertical: 10 },
+  rosterRowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#ebebeb" },
+  rosterRowMain: { flexDirection: "row", alignItems: "center" },
+  rosterPlayerInfo: { flex: 1 },
+  rosterPlayerName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a", marginBottom: 2 },
+  rosterMeta: { flexDirection: "row", alignItems: "center", gap: 4 },
+  teamTag: { fontSize: 12 },
+  metaDot: { fontSize: 12, color: "#ccc" },
+  posTag: { fontSize: 12, fontWeight: "600" },
+  rosterActions: { flexDirection: "row", alignItems: "center" },
+  actionBtn: { margin: 0, width: 32, height: 32 },
+
+  // Edit panel
+  editPanel: {
+    marginTop: 8,
+    padding: 12,
+    backgroundColor: "#f8f5ff",
+    borderRadius: 10,
+  },
+  editLabel: { fontSize: 12, marginBottom: 8 },
+  posChipRow: { flexDirection: "row", gap: 6, flexWrap: "wrap", marginBottom: 10 },
+  posChip: { height: 30 },
+  posChipText: { fontSize: 12 },
+  editActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+
+  // Search panel
+  searchPanel: { paddingHorizontal: 12, paddingBottom: 12 },
+  searchBar: { marginBottom: 4, backgroundColor: "#f5f5f5", borderRadius: 10 },
+  noResults: { color: "#aaa", textAlign: "center", padding: 12, fontSize: 13 },
+  searchResult: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingVertical: 10,
+    paddingHorizontal: 4,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#ebebeb",
+  },
+  searchResultDim: { opacity: 0.45 },
+  resultName: { flex: 1, fontSize: 14, fontWeight: "500", color: "#1a1a1a" },
+  onRosterLabel: { fontSize: 12, color: "#6750a4", fontWeight: "500" },
+  plusBtn: { margin: 0, width: 28, height: 28 },
+
+  // Confirm panel
+  confirmPanel: { padding: 16 },
+  confirmHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 },
+  confirmName: { fontSize: 17, fontWeight: "700" },
+  confirmMeta: { fontSize: 13, marginTop: 2 },
+  posLabel: { fontSize: 12, marginBottom: 8 },
+  addBtn: { marginTop: 12 },
+  spinner: { marginVertical: 12 },
+  errorText: { color: "#c62828", fontSize: 12, marginTop: 6 },
+  warningText: { color: "#e65100", fontSize: 12, fontWeight: "600", marginBottom: 6 },
 });

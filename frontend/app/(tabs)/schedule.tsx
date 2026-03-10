@@ -1,6 +1,6 @@
 import React, { useMemo } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { DataTable, Text, useTheme } from "react-native-paper";
+import { Surface, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import { getSchedule, ScheduleRow } from "../../lib/api";
 import { LoadingOrError } from "../../components/LoadingOrError";
@@ -14,9 +14,19 @@ interface TeamRow {
 }
 
 function gamesColor(n: number): string {
-  if (n >= 4) return "#2e7d32"; // green
-  if (n <= 2) return "#c62828"; // red
-  return "#e65100"; // orange for 3
+  if (n >= 4) return "#2e7d32";
+  if (n === 3) return "#1565c0";
+  if (n <= 2) return "#c62828";
+  return "#555";
+}
+
+function GamesBadge({ n }: { n: number }) {
+  const color = gamesColor(n);
+  return (
+    <View style={[styles.badge, { backgroundColor: color + "18" }]}>
+      <Text style={[styles.badgeText, { color }]}>{n}</Text>
+    </View>
+  );
 }
 
 export default function ScheduleScreen() {
@@ -38,71 +48,49 @@ export default function ScheduleScreen() {
       (map[row.team] as Record<string, number>)[key as string] = row.games_count;
       map[row.team].total += row.games_count;
     }
-    return Object.values(map).sort((a, b) => a.team.localeCompare(b.team));
+    return Object.values(map).sort((a, b) => b.total - a.total);
   }, [data]);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <Text style={[styles.title, { color: theme.colors.onBackground }]}>
-        Team Schedule
-      </Text>
-
       {(isLoading || error) && (
-        <LoadingOrError
-          loading={isLoading}
-          error={error as Error | null}
-          onRetry={refetch}
-        />
+        <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />
       )}
 
       {rows.length > 0 && (
-        <ScrollView>
-          <DataTable>
-            <DataTable.Header>
-              <DataTable.Title style={styles.teamCol}>Team</DataTable.Title>
-              <DataTable.Title numeric style={styles.weekCol}>Wk 21</DataTable.Title>
-              <DataTable.Title numeric style={styles.weekCol}>Wk 22</DataTable.Title>
-              <DataTable.Title numeric style={styles.weekCol}>Wk 23</DataTable.Title>
-              <DataTable.Title numeric style={styles.weekCol}>Total</DataTable.Title>
-            </DataTable.Header>
+        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+          <Surface style={styles.surface} elevation={1}>
+            {/* Header */}
+            <View style={styles.tableHeader}>
+              <Text style={[styles.colLabel, styles.teamColW]}>Team</Text>
+              <Text style={[styles.colLabel, styles.weekColW]}>Wk 21</Text>
+              <Text style={[styles.colLabel, styles.weekColW]}>Wk 22</Text>
+              <Text style={[styles.colLabel, styles.weekColW]}>Wk 23</Text>
+              <Text style={[styles.colLabel, styles.totalColW]}>Total</Text>
+            </View>
 
-            {rows.map((row) => (
-              <DataTable.Row key={row.team}>
-                <DataTable.Cell style={styles.teamCol}>
-                  <Text style={styles.teamText}>{row.team}</Text>
-                </DataTable.Cell>
-                <DataTable.Cell numeric style={styles.weekCol}>
-                  <Text style={{ color: gamesColor(row.w21), fontWeight: "700" }}>
-                    {row.w21}
-                  </Text>
-                </DataTable.Cell>
-                <DataTable.Cell numeric style={styles.weekCol}>
-                  <Text style={{ color: gamesColor(row.w22), fontWeight: "700" }}>
-                    {row.w22}
-                  </Text>
-                </DataTable.Cell>
-                <DataTable.Cell numeric style={styles.weekCol}>
-                  <Text style={{ color: gamesColor(row.w23), fontWeight: "700" }}>
-                    {row.w23}
-                  </Text>
-                </DataTable.Cell>
-                <DataTable.Cell numeric style={styles.weekCol}>
-                  <Text style={{ fontWeight: "800" }}>{row.total}</Text>
-                </DataTable.Cell>
-              </DataTable.Row>
+            {rows.map((row, idx) => (
+              <View
+                key={row.team}
+                style={[styles.tableRow, idx % 2 === 1 && styles.tableRowAlt]}
+              >
+                <Text style={[styles.teamText, styles.teamColW]}>{row.team}</Text>
+                <View style={styles.weekColW}><GamesBadge n={row.w21} /></View>
+                <View style={styles.weekColW}><GamesBadge n={row.w22} /></View>
+                <View style={styles.weekColW}><GamesBadge n={row.w23} /></View>
+                <Text style={[styles.totalText, styles.totalColW]}>{row.total}</Text>
+              </View>
             ))}
-          </DataTable>
+          </Surface>
 
+          {/* Legend */}
           <View style={styles.legend}>
-            <Text style={[styles.legendItem, { color: gamesColor(4) }]}>
-              ● 4 games (best)
-            </Text>
-            <Text style={[styles.legendItem, { color: gamesColor(3) }]}>
-              ● 3 games
-            </Text>
-            <Text style={[styles.legendItem, { color: gamesColor(2) }]}>
-              ● 2 games (fewest)
-            </Text>
+            {[{ n: 4, label: "4 games" }, { n: 3, label: "3 games" }, { n: 2, label: "2 games" }].map(({ n, label }) => (
+              <View key={n} style={styles.legendItem}>
+                <View style={[styles.legendDot, { backgroundColor: gamesColor(n) }]} />
+                <Text style={styles.legendText}>{label}</Text>
+              </View>
+            ))}
           </View>
         </ScrollView>
       )}
@@ -118,26 +106,43 @@ export default function ScheduleScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  title: {
-    fontSize: 22,
-    fontWeight: "700",
-    marginTop: 16,
-    marginHorizontal: 16,
-    marginBottom: 8,
-  },
-  teamCol: { flex: 2 },
-  weekCol: { flex: 1 },
-  teamText: { fontWeight: "600" },
-  legend: {
+  scroll: { padding: 16, paddingBottom: 32 },
+  surface: { borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
+
+  tableHeader: {
     flexDirection: "row",
-    justifyContent: "space-around",
-    padding: 16,
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "#6750a4",
   },
-  legendItem: { fontSize: 12, fontWeight: "600" },
-  emptyText: {
-    color: "#888",
-    textAlign: "center",
-    margin: 32,
-    fontSize: 14,
+  colLabel: { fontSize: 11, fontWeight: "700", color: "#fff", textTransform: "uppercase", letterSpacing: 0.4, textAlign: "center" },
+
+  tableRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#f0f0f0",
+    minHeight: 44,
   },
+  tableRowAlt: { backgroundColor: "#fafafa" },
+
+  teamColW: { width: 52, textAlign: "left" },
+  weekColW: { flex: 1, alignItems: "center" },
+  totalColW: { width: 48, textAlign: "right" },
+
+  teamText: { fontSize: 13, fontWeight: "700", color: "#1a1a1a" },
+  totalText: { fontSize: 15, fontWeight: "800", color: "#6750a4" },
+
+  badge: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 4, alignSelf: "center" },
+  badgeText: { fontSize: 14, fontWeight: "700" },
+
+  legend: { flexDirection: "row", justifyContent: "center", gap: 20, marginTop: 14 },
+  legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
+  legendDot: { width: 10, height: 10, borderRadius: 5 },
+  legendText: { fontSize: 12, color: "#666" },
+
+  emptyText: { color: "#888", textAlign: "center", margin: 32, fontSize: 14 },
 });
