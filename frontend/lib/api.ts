@@ -189,6 +189,55 @@ export function removeFromRoster(playerName: string): Promise<void> {
   });
 }
 
+// Saved rosters
+export interface SavedRosterEntry {
+  name: string;
+  team: string;
+  positions: string[];
+}
+
+export interface SavedRosterSchema {
+  id: number;
+  name: string;
+  players: SavedRosterEntry[];
+  created_at: string;
+}
+
+export function getSavedRosters(): Promise<SavedRosterSchema[]> {
+  return apiFetch<SavedRosterSchema[]>("/saved-rosters");
+}
+
+export function createSavedRoster(
+  name: string,
+  players: SavedRosterEntry[]
+): Promise<SavedRosterSchema> {
+  return apiFetch<SavedRosterSchema>("/saved-rosters", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, players }),
+  });
+}
+
+export function updateSavedRoster(
+  id: number,
+  name: string,
+  players: SavedRosterEntry[]
+): Promise<SavedRosterSchema> {
+  return apiFetch<SavedRosterSchema>(`/saved-rosters/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, players }),
+  });
+}
+
+export function deleteSavedRoster(id: number): Promise<void> {
+  return apiFetch<void>(`/saved-rosters/${id}`, { method: "DELETE" });
+}
+
+export function activateSavedRoster(id: number): Promise<RosterPlayer[]> {
+  return apiFetch<RosterPlayer[]>(`/saved-rosters/${id}/activate`, { method: "POST" });
+}
+
 export function updateRosterPositions(
   playerName: string,
   positions: string[]

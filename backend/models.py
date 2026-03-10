@@ -3,18 +3,20 @@ ORM models: Player, TeamSchedule, PlayerProjection.
 All share the Base declared in database.py.
 """
 
-from datetime import date
+from datetime import date, datetime
 
 from sqlalchemy import (
     Boolean,
     Date,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
     String,
     UniqueConstraint,
+    func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
@@ -102,3 +104,18 @@ class PlayerProjection(Base):
     projected_total: Mapped[float] = mapped_column(Float, default=0.0)
 
     player: Mapped["Player"] = relationship(back_populates="projections")
+
+
+class SavedRoster(Base):
+    """A named snapshot of a player list, used for compare and quick-load."""
+
+    __tablename__ = "saved_rosters"
+    __table_args__ = (UniqueConstraint("name", name="uq_saved_roster_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    # Stored as [{name, team, positions}]
+    players: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

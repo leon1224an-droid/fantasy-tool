@@ -1,12 +1,14 @@
 /**
  * Compare two rosters side-by-side by total games per week.
- * Each side can hold any set of players. Games come from /schedule/all,
- * keyed by team. Players are picked from the active roster OR searched.
+ * Players can be picked from the active roster, searched from the NBA,
+ * or loaded from a saved roster snapshot.
  */
 import React, { useState, useMemo, useCallback } from "react";
-import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
+  Button,
+  Divider,
   IconButton,
   Searchbar,
   Surface,
@@ -17,21 +19,23 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getAllSchedule,
   getRoster,
+  getSavedRosters,
   searchPlayers,
   getPlayerInfo,
   NBAPlayerSearchResult,
-  ScheduleRow,
+  SavedRosterSchema,
 } from "../../lib/api";
 
 const WEEKS = [21, 22, 23] as const;
 
-// ---- Types ----------------------------------------------------------------
 interface ComparePlayer {
   name: string;
   team: string;
 }
 
-// ---- Main screen ----------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Main screen
+// ---------------------------------------------------------------------------
 export default function CompareScreen() {
   const theme = useTheme();
 
@@ -43,7 +47,6 @@ export default function CompareScreen() {
     queryFn: getAllSchedule,
   });
 
-  // Build team → week → games lookup
   const gamesLookup = useMemo(() => {
     const map: Record<string, Record<number, number>> = {};
     if (!allSchedule) return map;
@@ -54,24 +57,25 @@ export default function CompareScreen() {
     return map;
   }, [allSchedule]);
 
-  const weekGames = (team: string, week: number) =>
-    gamesLookup[team]?.[week] ?? 0;
-
+  const weekGames = (team: string, week: number) => gamesLookup[team]?.[week] ?? 0;
   const rosterTotal = (roster: ComparePlayer[], week: number) =>
     roster.reduce((s, p) => s + weekGames(p.team, week), 0);
-
   const grandTotal = (roster: ComparePlayer[]) =>
     WEEKS.reduce((s, w) => s + rosterTotal(roster, w), 0);
 
   const removeA = (name: string) => setRosterA((r) => r.filter((p) => p.name !== name));
   const removeB = (name: string) => setRosterB((r) => r.filter((p) => p.name !== name));
-
   const addToA = (p: ComparePlayer) => {
     if (!rosterA.find((x) => x.name === p.name)) setRosterA((r) => [...r, p]);
   };
   const addToB = (p: ComparePlayer) => {
     if (!rosterB.find((x) => x.name === p.name)) setRosterB((r) => [...r, p]);
   };
+
+  const loadSavedToA = (roster: SavedRosterSchema) =>
+    setRosterA(roster.players.map((p) => ({ name: p.name, team: p.team })));
+  const loadSavedToB = (roster: SavedRosterSchema) =>
+    setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team })));
 
   const totA = WEEKS.map((w) => rosterTotal(rosterA, w));
   const totB = WEEKS.map((w) => rosterTotal(rosterB, w));
@@ -96,40 +100,27 @@ export default function CompareScreen() {
       {/* Totals comparison bar */}
       {(rosterA.length > 0 || rosterB.length > 0) && (
         <Surface style={styles.comparisonBar} elevation={1}>
-          <ComparisonRow
-            label="Week 21"
-            a={totA[0]}
-            b={totB[0]}
-            aCount={rosterA.length}
-            bCount={rosterB.length}
-          />
-          <ComparisonRow
-            label="Week 22"
-            a={totA[1]}
-            b={totB[1]}
-            aCount={rosterA.length}
-            bCount={rosterB.length}
-          />
-          <ComparisonRow
-            label="Week 23"
-            a={totA[2]}
-            b={totB[2]}
-            aCount={rosterA.length}
-            bCount={rosterB.length}
-          />
+          {WEEKS.map((w, i) => (
+            <ComparisonRow
+              key={w}
+              label={`Week ${w}`}
+              a={totA[i]}
+              b={totB[i]}
+              hasData={rosterA.length > 0 && rosterB.length > 0}
+            />
+          ))}
           <View style={styles.barDivider} />
           <ComparisonRow
             label="Total"
             a={grandA}
             b={grandB}
-            aCount={rosterA.length}
-            bCount={rosterB.length}
+            hasData={rosterA.length > 0 && rosterB.length > 0}
             isTotal
           />
         </Surface>
       )}
 
-      {/* Side-by-side roster panels */}
+      {/* Side-by-side panels */}
       <View style={styles.rostersRow}>
         <RosterPanel
           side="A"
@@ -137,6 +128,7 @@ export default function CompareScreen() {
           players={rosterA}
           onRemove={removeA}
           onAdd={addToA}
+          onLoadSaved={loadSavedToA}
           otherNames={new Set(rosterB.map((p) => p.name))}
           gamesLookup={gamesLookup}
         />
@@ -146,6 +138,7 @@ export default function CompareScreen() {
           players={rosterB}
           onRemove={removeB}
           onAdd={addToB}
+          onLoadSaved={loadSavedToB}
           otherNames={new Set(rosterA.map((p) => p.name))}
           gamesLookup={gamesLookup}
         />
@@ -153,108 +146,115 @@ export default function CompareScreen() {
 
       {rosterA.length === 0 && rosterB.length === 0 && (
         <Text style={styles.hint}>
-          Add players to Roster A and B to compare their playoff game totals.
+          Add players or load a saved roster into each side to compare playoff game totals.
         </Text>
       )}
     </ScrollView>
   );
 }
 
-// ---- Comparison row -------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Comparison row
+// ---------------------------------------------------------------------------
 function ComparisonRow({
-  label, a, b, aCount, bCount, isTotal,
+  label, a, b, hasData, isTotal,
 }: {
-  label: string; a: number; b: number; aCount: number; bCount: number; isTotal?: boolean;
+  label: string; a: number; b: number; hasData: boolean; isTotal?: boolean;
 }) {
-  const diff = a - b;
-  const aWins = aCount > 0 && bCount > 0 && diff > 0;
-  const bWins = aCount > 0 && bCount > 0 && diff < 0;
+  const aWins = hasData && a > b;
+  const bWins = hasData && b > a;
+  const diff = Math.abs(a - b);
 
   return (
     <View style={[styles.compRow, isTotal && styles.compRowTotal]}>
-      <Text style={[styles.compValue, { color: "#6750a4" }, aWins && styles.winnerText]}>
-        {a}
-      </Text>
+      <Text style={[styles.compValue, { color: "#6750a4" }, aWins && styles.compValueWinner]}>{a}</Text>
       <View style={styles.compMid}>
-        <Text style={[styles.compLabel, isTotal && styles.compLabelBold]}>{label}</Text>
-        {aCount > 0 && bCount > 0 && diff !== 0 && (
+        <Text style={[styles.compLabel, isTotal && styles.compLabelTotal]}>{label}</Text>
+        {hasData && diff > 0 && (
           <Text style={[styles.diffText, { color: aWins ? "#6750a4" : "#c2185b" }]}>
-            {aWins ? `A +${diff}` : `B +${Math.abs(diff)}`}
+            {aWins ? `A +${diff}` : `B +${diff}`}
           </Text>
         )}
       </View>
-      <Text style={[styles.compValue, { color: "#c2185b" }, bWins && styles.winnerText]}>
-        {b}
-      </Text>
+      <Text style={[styles.compValue, { color: "#c2185b" }, bWins && styles.compValueWinner]}>{b}</Text>
     </View>
   );
 }
 
-// ---- Roster panel ---------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Roster panel
+// ---------------------------------------------------------------------------
 function RosterPanel({
-  side, color, players, onRemove, onAdd, otherNames, gamesLookup,
+  side, color, players, onRemove, onAdd, onLoadSaved, otherNames, gamesLookup,
 }: {
   side: "A" | "B";
   color: string;
   players: ComparePlayer[];
   onRemove: (name: string) => void;
   onAdd: (p: ComparePlayer) => void;
+  onLoadSaved: (roster: SavedRosterSchema) => void;
   otherNames: Set<string>;
   gamesLookup: Record<string, Record<number, number>>;
 }) {
-  const [showSearch, setShowSearch] = useState(false);
-  const myNames = new Set(players.map((p) => p.name));
+  const [showAdd, setShowAdd] = useState(false);
+  const [showLoadModal, setShowLoadModal] = useState(false);
 
   return (
     <Surface style={[styles.panel, { borderTopColor: color, borderTopWidth: 3 }]} elevation={1}>
       {/* Panel header */}
       <View style={[styles.panelHeader, { backgroundColor: color + "12" }]}>
         <Text style={[styles.panelTitle, { color }]}>Roster {side}</Text>
-        <IconButton
-          icon={showSearch ? "minus-circle-outline" : "plus-circle-outline"}
-          iconColor={color}
-          size={20}
-          style={styles.panelAddBtn}
-          onPress={() => setShowSearch((v) => !v)}
-        />
+        <View style={styles.panelHeaderActions}>
+          <IconButton
+            icon="bookmark-outline"
+            size={18}
+            iconColor={color}
+            style={styles.panelActionBtn}
+            onPress={() => { setShowLoadModal(true); setShowAdd(false); }}
+          />
+          <IconButton
+            icon={showAdd ? "minus-circle-outline" : "plus-circle-outline"}
+            iconColor={color}
+            size={18}
+            style={styles.panelActionBtn}
+            onPress={() => { setShowAdd((v) => !v); setShowLoadModal(false); }}
+          />
+        </View>
       </View>
 
       {/* Search/add */}
-      {showSearch && (
+      {showAdd && (
         <PlayerPicker
           color={color}
-          excludeNames={myNames}
-          onSelect={(p) => {
-            onAdd(p);
-            setShowSearch(false);
-          }}
+          excludeNames={new Set(players.map((p) => p.name))}
+          onSelect={(p) => { onAdd(p); setShowAdd(false); }}
         />
       )}
 
-      {/* Player list */}
-      {players.length === 0 && !showSearch && (
-        <Text style={styles.emptyPanel}>Tap + to add players</Text>
+      {/* Load saved roster modal */}
+      <SavedRosterModal
+        visible={showLoadModal}
+        color={color}
+        onClose={() => setShowLoadModal(false)}
+        onLoad={(r) => { onLoadSaved(r); setShowLoadModal(false); }}
+      />
+
+      {/* Empty state */}
+      {players.length === 0 && !showAdd && (
+        <Text style={styles.emptyPanel}>Tap + to add or bookmark to load saved</Text>
       )}
 
+      {/* Player list */}
       {players.map((p) => {
         const games = WEEKS.map((w) => gamesLookup[p.team]?.[w] ?? 0);
         const total = games.reduce((s, g) => s + g, 0);
-        const isShared = otherNames.has(p.name);
         return (
           <View key={p.name} style={styles.playerRow}>
             <View style={styles.playerInfo}>
               <Text style={styles.playerName} numberOfLines={1}>{p.name}</Text>
-              <Text style={styles.playerMeta}>
-                {p.team} · {games.join("-")} ({total}G)
-              </Text>
+              <Text style={styles.playerMeta}>{p.team} · {games.join("-")} ({total}G)</Text>
             </View>
-            <IconButton
-              icon="close"
-              size={16}
-              iconColor="#999"
-              onPress={() => onRemove(p.name)}
-              style={styles.removeBtn}
-            />
+            <IconButton icon="close" size={16} iconColor="#bbb" onPress={() => onRemove(p.name)} style={styles.removeBtn} />
           </View>
         );
       })}
@@ -267,7 +267,7 @@ function RosterPanel({
             return (
               <View key={w} style={styles.panelTotalCell}>
                 <Text style={[styles.panelTotalVal, { color }]}>{t}</Text>
-                <Text style={styles.panelTotalLbl}>Wk {w}</Text>
+                <Text style={styles.panelTotalLbl}>Wk{w}</Text>
               </View>
             );
           })}
@@ -283,11 +283,74 @@ function RosterPanel({
   );
 }
 
-// ---- Player picker --------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Saved roster picker modal
+// ---------------------------------------------------------------------------
+function SavedRosterModal({
+  visible, color, onClose, onLoad,
+}: {
+  visible: boolean;
+  color: string;
+  onClose: () => void;
+  onLoad: (r: SavedRosterSchema) => void;
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["saved-rosters"],
+    queryFn: getSavedRosters,
+    enabled: visible,
+  });
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={styles.modalOverlay} activeOpacity={1} onPress={onClose}>
+        <TouchableOpacity activeOpacity={1}>
+          <Surface style={[styles.modalCard, { borderTopColor: color, borderTopWidth: 3 }]} elevation={4}>
+            <View style={styles.modalHeader}>
+              <Text style={[styles.modalTitle, { color }]}>Load Saved Roster</Text>
+              <IconButton icon="close" size={20} onPress={onClose} style={{ margin: 0 }} />
+            </View>
+            <Divider />
+
+            {isLoading && <ActivityIndicator style={{ margin: 20 }} />}
+
+            {!isLoading && (!data || data.length === 0) && (
+              <Text style={styles.modalEmpty}>
+                No saved rosters yet. Create one in the Roster tab.
+              </Text>
+            )}
+
+            <ScrollView style={styles.modalList}>
+              {data?.map((roster) => (
+                <TouchableOpacity
+                  key={roster.id}
+                  style={styles.modalRow}
+                  onPress={() => onLoad(roster)}
+                  activeOpacity={0.6}
+                >
+                  <View style={styles.modalRowInfo}>
+                    <Text style={styles.modalRosterName}>{roster.name}</Text>
+                    <Text style={styles.modalRosterMeta}>
+                      {roster.players.length} players · {roster.players.map((p) => p.name.split(" ").pop()).join(", ")}
+                    </Text>
+                  </View>
+                  <IconButton icon="chevron-right" size={18} iconColor={color} style={{ margin: 0 }} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </Surface>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Player picker (search from roster + NBA)
+// ---------------------------------------------------------------------------
 function PlayerPicker({
-  color,
-  excludeNames,
-  onSelect,
+  color, excludeNames, onSelect,
 }: {
   color: string;
   excludeNames: Set<string>;
@@ -304,95 +367,66 @@ function PlayerPicker({
     enabled: query.length >= 2,
   });
 
-  // Roster players filtered by query
   const rosterMatches = useMemo(() => {
     if (!roster) return [];
     const q = query.toLowerCase();
-    return roster.filter(
-      (p) => !excludeNames.has(p.name) && p.name.toLowerCase().includes(q)
-    );
+    return roster.filter((p) => !excludeNames.has(p.name) && p.name.toLowerCase().includes(q));
   }, [roster, query, excludeNames]);
 
-  // Search results (non-roster players)
   const rosterNames = new Set(roster?.map((p) => p.name) ?? []);
   const externalResults: NBAPlayerSearchResult[] = (searchResults ?? []).filter(
     (r) => !rosterNames.has(r.name) && !excludeNames.has(r.name)
   );
 
-  const handlePickFromRoster = useCallback(
-    (name: string, team: string) => {
-      onSelect({ name, team });
-      setQuery("");
-    },
-    [onSelect]
-  );
-
-  const handlePickExternal = useCallback(
-    async (result: NBAPlayerSearchResult) => {
-      setLoadingId(result.player_id);
-      try {
-        const info = await getPlayerInfo(result.player_id);
-        onSelect({ name: info.name, team: info.team });
-        setQuery("");
-      } finally {
-        setLoadingId(null);
-      }
-    },
-    [onSelect]
-  );
+  const handlePickExternal = useCallback(async (result: NBAPlayerSearchResult) => {
+    setLoadingId(result.player_id);
+    try {
+      const info = await getPlayerInfo(result.player_id);
+      onSelect({ name: info.name, team: info.team });
+      setLoadingId(null);
+    } catch {
+      setLoadingId(null);
+    }
+  }, [onSelect]);
 
   return (
     <View style={styles.pickerPanel}>
       <Searchbar
-        placeholder="Name or search…"
+        placeholder="Search…"
         value={query}
         onChangeText={setQuery}
-        style={[styles.pickerSearch, { borderColor: color + "50" }]}
+        style={styles.pickerSearch}
         loading={searching}
         elevation={0}
       />
-
-      {/* From active roster */}
-      {rosterMatches.slice(0, 6).map((p) => (
-        <TouchableOpacity
-          key={p.name}
-          style={styles.pickerRow}
-          onPress={() => handlePickFromRoster(p.name, p.team)}
-          activeOpacity={0.6}
-        >
-          <View>
+      {rosterMatches.slice(0, 5).map((p) => (
+        <TouchableOpacity key={p.name} style={styles.pickerRow} onPress={() => onSelect({ name: p.name, team: p.team })} activeOpacity={0.6}>
+          <View style={{ flex: 1 }}>
             <Text style={styles.pickerName}>{p.name}</Text>
             <Text style={styles.pickerMeta}>{p.team} · roster</Text>
           </View>
           <IconButton icon="plus" size={14} iconColor={color} style={styles.pickerPlusBtn} />
         </TouchableOpacity>
       ))}
-
-      {/* From NBA-wide search (non-roster) */}
-      {query.length >= 2 &&
-        externalResults.slice(0, 4).map((r) => (
-          <TouchableOpacity
-            key={r.player_id}
-            style={styles.pickerRow}
-            onPress={() => handlePickExternal(r)}
-            activeOpacity={0.6}
-          >
-            <View style={{ flex: 1 }}>
-              <Text style={styles.pickerName}>{r.name}</Text>
-              <Text style={styles.pickerMeta}>NBA search</Text>
-            </View>
-            {loadingId === r.player_id ? (
-              <ActivityIndicator size={14} style={styles.pickerPlusBtn} />
-            ) : (
-              <IconButton icon="plus" size={14} iconColor={color} style={styles.pickerPlusBtn} />
-            )}
-          </TouchableOpacity>
-        ))}
+      {query.length >= 2 && externalResults.slice(0, 3).map((r) => (
+        <TouchableOpacity key={r.player_id} style={styles.pickerRow} onPress={() => handlePickExternal(r)} activeOpacity={0.6}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.pickerName}>{r.name}</Text>
+            <Text style={styles.pickerMeta}>NBA search</Text>
+          </View>
+          {loadingId === r.player_id
+            ? <ActivityIndicator size={14} style={styles.pickerPlusBtn} />
+            : <IconButton icon="plus" size={14} iconColor={color} style={styles.pickerPlusBtn} />
+          }
+        </TouchableOpacity>
+      ))}
     </View>
   );
 }
 
-// ---- Styles ---------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Styles
+// ---------------------------------------------------------------------------
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 40, gap: 12 },
@@ -401,26 +435,27 @@ const styles = StyleSheet.create({
   hint: { color: "#aaa", textAlign: "center", fontSize: 13, marginTop: 8 },
 
   // Comparison bar
-  comparisonBar: { borderRadius: 14, backgroundColor: "#fff", overflow: "hidden", marginBottom: 4 },
+  comparisonBar: { borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
   compRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 16 },
   compRowTotal: { backgroundColor: "#fafafa" },
   compValue: { fontSize: 22, fontWeight: "800", width: 44, textAlign: "center" },
+  compValueWinner: { fontSize: 26 },
   compMid: { flex: 1, alignItems: "center" },
-  compLabel: { fontSize: 13, color: "#555" },
-  compLabelBold: { fontWeight: "700", color: "#1a1a1a" },
-  diffText: { fontSize: 11, fontWeight: "700", marginTop: 2 },
-  winnerText: { fontSize: 26 },
-  barDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#e0e0e0", marginHorizontal: 16 },
+  compLabel: { fontSize: 13, color: "#666" },
+  compLabelTotal: { fontWeight: "700", color: "#1a1a1a" },
+  diffText: { fontSize: 11, fontWeight: "700", marginTop: 1 },
+  barDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#e8e8e8", marginHorizontal: 16 },
 
-  // Roster panels
+  // Panels
   rostersRow: { flexDirection: "row", gap: 10 },
   panel: { flex: 1, borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
-  panelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 14, paddingVertical: 4 },
+  panelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 12, paddingVertical: 2 },
   panelTitle: { fontSize: 15, fontWeight: "800" },
-  panelAddBtn: { margin: 0 },
-  emptyPanel: { color: "#bbb", textAlign: "center", paddingVertical: 20, fontSize: 12 },
+  panelHeaderActions: { flexDirection: "row" },
+  panelActionBtn: { margin: 0, width: 32, height: 32 },
+  emptyPanel: { color: "#bbb", textAlign: "center", paddingHorizontal: 8, paddingVertical: 16, fontSize: 11 },
 
-  playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
   playerInfo: { flex: 1, paddingVertical: 8 },
   playerName: { fontSize: 12, fontWeight: "600", color: "#1a1a1a" },
   playerMeta: { fontSize: 10, color: "#888", marginTop: 1 },
@@ -431,11 +466,23 @@ const styles = StyleSheet.create({
   panelTotalVal: { fontSize: 16, fontWeight: "800" },
   panelTotalLbl: { fontSize: 9, color: "#888", textTransform: "uppercase", letterSpacing: 0.3 },
 
-  // Player picker
+  // Picker
   pickerPanel: { paddingHorizontal: 10, paddingBottom: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
   pickerSearch: { marginBottom: 4, backgroundColor: "#f5f5f5", height: 38, borderRadius: 10 },
   pickerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f8f8f8" },
   pickerName: { fontSize: 12, fontWeight: "600", color: "#1a1a1a" },
   pickerMeta: { fontSize: 10, color: "#888" },
   pickerPlusBtn: { margin: 0, width: 24, height: 24 },
+
+  // Modal
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
+  modalCard: { width: 340, maxHeight: 480, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
+  modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
+  modalTitle: { fontSize: 16, fontWeight: "700" },
+  modalEmpty: { color: "#aaa", textAlign: "center", padding: 24, fontSize: 13 },
+  modalList: { maxHeight: 360 },
+  modalRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  modalRowInfo: { flex: 1 },
+  modalRosterName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
+  modalRosterMeta: { fontSize: 11, color: "#888", marginTop: 2 },
 });

@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Alert, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
   Button,
@@ -9,6 +9,7 @@ import {
   Searchbar,
   Surface,
   Text,
+  TextInput,
   useTheme,
 } from "react-native-paper";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -19,9 +20,16 @@ import {
   addToRoster,
   removeFromRoster,
   updateRosterPositions,
+  getSavedRosters,
+  createSavedRoster,
+  updateSavedRoster,
+  deleteSavedRoster,
+  activateSavedRoster,
   RosterPlayer,
   NBAPlayerSearchResult,
   NBAPlayerInfo,
+  SavedRosterSchema,
+  SavedRosterEntry,
 } from "../../lib/api";
 import { LoadingOrError } from "../../components/LoadingOrError";
 
@@ -37,16 +45,14 @@ export default function RosterScreen() {
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={styles.scrollContent}
     >
-      {/* Add Player — at the top */}
+      {/* Add Player — collapsible at top */}
       <Surface style={styles.card} elevation={1}>
         <TouchableOpacity
           onPress={() => setSearchExpanded((v) => !v)}
-          style={styles.addHeader}
+          style={styles.cardHeader}
           activeOpacity={0.7}
         >
-          <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-            Add Player
-          </Text>
+          <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Add Player</Text>
           <IconButton
             icon={searchExpanded ? "chevron-up" : "chevron-down"}
             size={20}
@@ -59,18 +65,23 @@ export default function RosterScreen() {
         )}
       </Surface>
 
-      {/* Current roster */}
-      <CurrentRoster />
+      {/* Active roster */}
+      <ActiveRoster />
+
+      {/* Saved rosters */}
+      <SavedRosters />
     </ScrollView>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Current roster
+// Active roster
 // ---------------------------------------------------------------------------
-function CurrentRoster() {
+function ActiveRoster() {
   const theme = useTheme();
   const queryClient = useQueryClient();
+  const [saving, setSaving] = useState(false);
+  const [saveName, setSaveName] = useState("");
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["roster"],
@@ -86,28 +97,78 @@ function CurrentRoster() {
     },
   });
 
+  const saveRosterMutation = useMutation({
+    mutationFn: ({ name, players }: { name: string; players: SavedRosterEntry[] }) =>
+      createSavedRoster(name, players),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["saved-rosters"] });
+      setSaving(false);
+      setSaveName("");
+    },
+  });
+
   if (isLoading || error) {
     return <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />;
   }
 
   const count = data?.length ?? 0;
 
+  const handleSave = () => {
+    if (!saveName.trim() || !data) return;
+    saveRosterMutation.mutate({
+      name: saveName.trim(),
+      players: data.map((p) => ({ name: p.name, team: p.team, positions: p.positions })),
+    });
+  };
+
   return (
     <Surface style={styles.card} elevation={1}>
-      <View style={styles.rosterHeader}>
-        <Text style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-          My Roster
-        </Text>
-        <Text style={[styles.countBadge, {
-          color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant,
-        }]}>
-          {count}/13
-        </Text>
+      <View style={styles.cardHeader}>
+        <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>My Roster</Text>
+        <View style={styles.rosterHeaderRight}>
+          <Text style={[styles.countBadge, { color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
+            {count}/13
+          </Text>
+          <IconButton
+            icon="content-save-outline"
+            size={20}
+            iconColor={theme.colors.primary}
+            onPress={() => setSaving((v) => !v)}
+            style={styles.chevron}
+          />
+        </View>
       </View>
 
-      {count === 0 && (
-        <Text style={styles.emptyText}>No players yet — add some above.</Text>
+      {/* Save-as input */}
+      {saving && (
+        <View style={styles.saveRow}>
+          <TextInput
+            mode="outlined"
+            placeholder="Roster name…"
+            value={saveName}
+            onChangeText={setSaveName}
+            style={styles.saveInput}
+            dense
+          />
+          <Button
+            mode="contained-tonal"
+            compact
+            onPress={handleSave}
+            loading={saveRosterMutation.isPending}
+            disabled={!saveName.trim() || saveRosterMutation.isPending}
+          >
+            Save
+          </Button>
+          <Button mode="text" compact onPress={() => { setSaving(false); setSaveName(""); }}>
+            Cancel
+          </Button>
+        </View>
       )}
+      {saveRosterMutation.isError && (
+        <Text style={styles.errorText}>{(saveRosterMutation.error as Error).message}</Text>
+      )}
+
+      {count === 0 && <Text style={styles.emptyText}>No players yet — add some above.</Text>}
 
       {data?.map((player, idx) => (
         <RosterRow
@@ -126,10 +187,7 @@ function CurrentRoster() {
 // Single roster row with inline position editor
 // ---------------------------------------------------------------------------
 function RosterRow({
-  player,
-  isLast,
-  onRemove,
-  removing,
+  player, isLast, onRemove, removing,
 }: {
   player: RosterPlayer;
   isLast: boolean;
@@ -149,71 +207,44 @@ function RosterRow({
     },
   });
 
-  const togglePos = (pos: string) =>
-    setPositions((prev) =>
-      prev.includes(pos) ? prev.filter((p) => p !== pos) : [...prev, pos]
-    );
-
   return (
     <View style={[styles.rosterRow, !isLast && styles.rosterRowBorder]}>
-      {/* Main row */}
       <View style={styles.rosterRowMain}>
-        {/* Name + meta */}
         <View style={styles.rosterPlayerInfo}>
-          <Text style={styles.rosterPlayerName} numberOfLines={1}>
-            {player.name}
-          </Text>
+          <Text style={styles.rosterPlayerName} numberOfLines={1}>{player.name}</Text>
           <View style={styles.rosterMeta}>
-            <Text style={[styles.teamTag, { color: theme.colors.onSurfaceVariant }]}>
-              {player.team}
-            </Text>
+            <Text style={[styles.teamTag, { color: theme.colors.onSurfaceVariant }]}>{player.team}</Text>
             <Text style={styles.metaDot}>·</Text>
             {player.positions.map((pos) => (
-              <Text key={pos} style={[styles.posTag, { color: theme.colors.primary }]}>
-                {pos}
-              </Text>
+              <Text key={pos} style={[styles.posTag, { color: theme.colors.primary }]}>{pos}</Text>
             ))}
           </View>
         </View>
-
-        {/* Actions */}
         <View style={styles.rosterActions}>
           <IconButton
             icon="pencil-outline"
             size={18}
             iconColor={editing ? theme.colors.primary : theme.colors.onSurfaceVariant}
-            onPress={() => {
-              setPositions(player.positions);
-              setEditing((v) => !v);
-            }}
+            onPress={() => { setPositions(player.positions); setEditing((v) => !v); }}
             style={styles.actionBtn}
           />
           {removing ? (
             <ActivityIndicator size={16} style={styles.actionBtn} />
           ) : (
-            <IconButton
-              icon="close-circle-outline"
-              size={18}
-              iconColor="#e65100"
-              onPress={onRemove}
-              style={styles.actionBtn}
-            />
+            <IconButton icon="close-circle-outline" size={18} iconColor="#e65100" onPress={onRemove} style={styles.actionBtn} />
           )}
         </View>
       </View>
 
-      {/* Inline position editor */}
       {editing && (
         <View style={styles.editPanel}>
-          <Text style={[styles.editLabel, { color: theme.colors.onSurfaceVariant }]}>
-            Tap to toggle positions:
-          </Text>
+          <Text style={[styles.editLabel, { color: theme.colors.onSurfaceVariant }]}>Tap to toggle positions:</Text>
           <View style={styles.posChipRow}>
             {POSITION_OPTIONS.map((pos) => (
               <Chip
                 key={pos}
                 selected={positions.includes(pos)}
-                onPress={() => togglePos(pos)}
+                onPress={() => setPositions((p) => p.includes(pos) ? p.filter((x) => x !== pos) : [...p, pos])}
                 compact
                 showSelectedOverlay
                 style={styles.posChip}
@@ -224,29 +255,10 @@ function RosterRow({
             ))}
           </View>
           <View style={styles.editActions}>
-            <Button
-              mode="text"
-              compact
-              onPress={() => setEditing(false)}
-              textColor={theme.colors.onSurfaceVariant}
-            >
-              Cancel
-            </Button>
-            <Button
-              mode="contained-tonal"
-              compact
-              onPress={() => saveMutation.mutate()}
-              loading={saveMutation.isPending}
-              disabled={saveMutation.isPending || positions.length === 0}
-            >
-              Save
-            </Button>
+            <Button mode="text" compact onPress={() => setEditing(false)} textColor={theme.colors.onSurfaceVariant}>Cancel</Button>
+            <Button mode="contained-tonal" compact onPress={() => saveMutation.mutate()} loading={saveMutation.isPending} disabled={saveMutation.isPending || positions.length === 0}>Save</Button>
           </View>
-          {saveMutation.isError && (
-            <Text style={styles.errorText}>
-              {(saveMutation.error as Error).message}
-            </Text>
-          )}
+          {saveMutation.isError && <Text style={styles.errorText}>{(saveMutation.error as Error).message}</Text>}
         </View>
       )}
     </View>
@@ -254,14 +266,169 @@ function RosterRow({
 }
 
 // ---------------------------------------------------------------------------
-// Search + add flow
+// Saved rosters section
+// ---------------------------------------------------------------------------
+function SavedRosters() {
+  const theme = useTheme();
+  const queryClient = useQueryClient();
+  const [expanded, setExpanded] = useState(true);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState("");
+
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ["saved-rosters"],
+    queryFn: getSavedRosters,
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: deleteSavedRoster,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-rosters"] }),
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: activateSavedRoster,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["roster"] });
+      queryClient.invalidateQueries({ queryKey: ["player-grid"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar"] });
+    },
+  });
+
+  const renameMutation = useMutation({
+    mutationFn: ({ id, name, players }: { id: number; name: string; players: SavedRosterEntry[] }) =>
+      updateSavedRoster(id, name, players),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["saved-rosters"] });
+      setEditingId(null);
+    },
+  });
+
+  const confirmActivate = (roster: SavedRosterSchema) => {
+    Alert.alert(
+      "Set as Active Roster",
+      `Replace your current active roster with "${roster.name}"? This will deactivate your current players.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Activate", style: "destructive", onPress: () => activateMutation.mutate(roster.id) },
+      ]
+    );
+  };
+
+  const confirmDelete = (roster: SavedRosterSchema) => {
+    Alert.alert(
+      "Delete Roster",
+      `Delete "${roster.name}"?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: () => deleteMutation.mutate(roster.id) },
+      ]
+    );
+  };
+
+  return (
+    <Surface style={styles.card} elevation={1}>
+      <TouchableOpacity onPress={() => setExpanded((v) => !v)} style={styles.cardHeader} activeOpacity={0.7}>
+        <View style={styles.savedHeaderLeft}>
+          <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>Saved Rosters</Text>
+          {data && data.length > 0 && (
+            <View style={styles.savedCountPill}>
+              <Text style={styles.savedCountText}>{data.length}</Text>
+            </View>
+          )}
+        </View>
+        <IconButton icon={expanded ? "chevron-up" : "chevron-down"} size={20} iconColor={theme.colors.onSurfaceVariant} style={styles.chevron} />
+      </TouchableOpacity>
+
+      {expanded && (
+        <>
+          {(isLoading || error) && (
+            <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />
+          )}
+          {data?.length === 0 && (
+            <Text style={styles.emptyText}>No saved rosters yet. Use the save icon on My Roster.</Text>
+          )}
+
+          {data?.map((roster, idx) => (
+            <View key={roster.id} style={[styles.savedRow, idx < data.length - 1 && styles.rosterRowBorder]}>
+              {editingId === roster.id ? (
+                <View style={styles.renameRow}>
+                  <TextInput
+                    mode="outlined"
+                    value={editName}
+                    onChangeText={setEditName}
+                    style={styles.saveInput}
+                    dense
+                    autoFocus
+                  />
+                  <Button
+                    mode="contained-tonal"
+                    compact
+                    onPress={() => renameMutation.mutate({ id: roster.id, name: editName.trim(), players: roster.players })}
+                    loading={renameMutation.isPending}
+                    disabled={!editName.trim() || renameMutation.isPending}
+                  >
+                    OK
+                  </Button>
+                  <Button mode="text" compact onPress={() => setEditingId(null)}>✕</Button>
+                </View>
+              ) : (
+                <View style={styles.savedRowMain}>
+                  <View style={styles.savedInfo}>
+                    <Text style={styles.savedName} numberOfLines={1}>{roster.name}</Text>
+                    <Text style={styles.savedMeta}>{roster.players.length} players</Text>
+                  </View>
+                  <View style={styles.savedActions}>
+                    {activateMutation.isPending && activateMutation.variables === roster.id ? (
+                      <ActivityIndicator size={16} />
+                    ) : (
+                      <IconButton
+                        icon="swap-horizontal"
+                        size={18}
+                        iconColor="#1565c0"
+                        onPress={() => confirmActivate(roster)}
+                        style={styles.actionBtn}
+                      />
+                    )}
+                    <IconButton
+                      icon="pencil-outline"
+                      size={18}
+                      iconColor={theme.colors.onSurfaceVariant}
+                      onPress={() => { setEditingId(roster.id); setEditName(roster.name); }}
+                      style={styles.actionBtn}
+                    />
+                    <IconButton
+                      icon="delete-outline"
+                      size={18}
+                      iconColor="#e65100"
+                      onPress={() => confirmDelete(roster)}
+                      style={styles.actionBtn}
+                    />
+                  </View>
+                </View>
+              )}
+
+              {/* Player preview */}
+              {editingId !== roster.id && (
+                <Text style={styles.savedPlayers} numberOfLines={2}>
+                  {roster.players.map((p) => p.name).join(", ")}
+                </Text>
+              )}
+            </View>
+          ))}
+        </>
+      )}
+    </Surface>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Search + add flow (unchanged from before)
 // ---------------------------------------------------------------------------
 type AddStep = "search" | "confirm";
 
 function PlayerSearch({ onAdded }: { onAdded: () => void }) {
   const theme = useTheme();
   const queryClient = useQueryClient();
-
   const [query, setQuery] = useState("");
   const [step, setStep] = useState<AddStep>("search");
   const [selectedResult, setSelectedResult] = useState<NBAPlayerSearchResult | null>(null);
@@ -292,23 +459,16 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
   });
 
   const resetFlow = useCallback(() => {
-    setStep("search");
-    setQuery("");
-    setSelectedResult(null);
-    setPlayerInfo(null);
-    setCustomPositions([]);
-    setInfoError(null);
+    setStep("search"); setQuery(""); setSelectedResult(null);
+    setPlayerInfo(null); setCustomPositions([]); setInfoError(null);
   }, []);
 
   const handleSelectPlayer = useCallback(async (result: NBAPlayerSearchResult) => {
-    setSelectedResult(result);
-    setStep("confirm");
-    setInfoLoading(true);
-    setInfoError(null);
+    setSelectedResult(result); setStep("confirm");
+    setInfoLoading(true); setInfoError(null);
     try {
       const info = await getPlayerInfo(result.player_id);
-      setPlayerInfo(info);
-      setCustomPositions(info.positions);
+      setPlayerInfo(info); setCustomPositions(info.positions);
     } catch (e: unknown) {
       setInfoError(e instanceof Error ? e.message : "Failed to load player info");
     } finally {
@@ -316,31 +476,12 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
     }
   }, []);
 
-  const togglePosition = useCallback((pos: string) => {
-    setCustomPositions((prev) =>
-      prev.includes(pos) ? prev.filter((p) => p !== pos) : [...prev, pos]
-    );
-  }, []);
-
-  const handleAdd = useCallback(() => {
-    if (!playerInfo || customPositions.length === 0) return;
-    addMutation.mutate({
-      player_id: playerInfo.player_id,
-      name: playerInfo.name,
-      team: playerInfo.team,
-      positions: customPositions,
-    });
-  }, [playerInfo, customPositions, addMutation]);
-
-  // ---- Confirm step ----
   if (step === "confirm") {
     return (
       <View style={styles.confirmPanel}>
         <View style={styles.confirmHeader}>
           <View>
-            <Text style={[styles.confirmName, { color: theme.colors.onSurface }]}>
-              {selectedResult?.name}
-            </Text>
+            <Text style={[styles.confirmName, { color: theme.colors.onSurface }]}>{selectedResult?.name}</Text>
             {playerInfo && (
               <Text style={[styles.confirmMeta, { color: theme.colors.onSurfaceVariant }]}>
                 {playerInfo.team} · {playerInfo.nba_position}
@@ -349,21 +490,17 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
           </View>
           <IconButton icon="arrow-left" size={20} onPress={resetFlow} />
         </View>
-
         {infoLoading && <ActivityIndicator style={styles.spinner} />}
         {infoError && <Text style={styles.errorText}>{infoError}</Text>}
-
         {playerInfo && (
           <>
-            <Text style={[styles.posLabel, { color: theme.colors.onSurfaceVariant }]}>
-              Fantasy positions:
-            </Text>
+            <Text style={[styles.posLabel, { color: theme.colors.onSurfaceVariant }]}>Fantasy positions:</Text>
             <View style={styles.posChipRow}>
               {POSITION_OPTIONS.map((pos) => (
                 <Chip
                   key={pos}
                   selected={customPositions.includes(pos)}
-                  onPress={() => togglePosition(pos)}
+                  onPress={() => setCustomPositions((p) => p.includes(pos) ? p.filter((x) => x !== pos) : [...p, pos])}
                   showSelectedOverlay
                   style={styles.posChip}
                   textStyle={styles.posChipText}
@@ -372,41 +509,24 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
                 </Chip>
               ))}
             </View>
-
-            {rosterCount >= 13 && (
-              <Text style={styles.warningText}>Roster is full (13/13). Remove a player first.</Text>
-            )}
-            {rosterNames.has(playerInfo.name) && (
-              <Text style={styles.warningText}>{playerInfo.name} is already on your roster.</Text>
-            )}
-
+            {rosterCount >= 13 && <Text style={styles.warningText}>Roster is full (13/13).</Text>}
+            {rosterNames.has(playerInfo.name) && <Text style={styles.warningText}>{playerInfo.name} is already on your roster.</Text>}
             <Button
               mode="contained"
-              onPress={handleAdd}
+              onPress={() => addMutation.mutate({ player_id: playerInfo.player_id, name: playerInfo.name, team: playerInfo.team, positions: customPositions })}
               loading={addMutation.isPending}
-              disabled={
-                addMutation.isPending ||
-                customPositions.length === 0 ||
-                rosterCount >= 13 ||
-                rosterNames.has(playerInfo.name)
-              }
+              disabled={addMutation.isPending || customPositions.length === 0 || rosterCount >= 13 || rosterNames.has(playerInfo.name)}
               style={styles.addBtn}
             >
               Add to Roster
             </Button>
-
-            {addMutation.isError && (
-              <Text style={styles.errorText}>
-                {(addMutation.error as Error).message}
-              </Text>
-            )}
+            {addMutation.isError && <Text style={styles.errorText}>{(addMutation.error as Error).message}</Text>}
           </>
         )}
       </View>
     );
   }
 
-  // ---- Search step ----
   return (
     <View style={styles.searchPanel}>
       <Searchbar
@@ -417,11 +537,9 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
         loading={searching}
         elevation={0}
       />
-
       {query.length >= 2 && !searching && searchResults?.length === 0 && (
         <Text style={styles.noResults}>No active players found for "{query}"</Text>
       )}
-
       {searchResults?.slice(0, 8).map((result) => {
         const onRoster = rosterNames.has(result.name);
         return (
@@ -431,14 +549,11 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
             activeOpacity={onRoster ? 1 : 0.6}
             style={[styles.searchResult, onRoster && styles.searchResultDim]}
           >
-            <Text style={[styles.resultName, onRoster && { color: "#aaa" }]}>
-              {result.name}
-            </Text>
-            {onRoster ? (
-              <Text style={styles.onRosterLabel}>On roster</Text>
-            ) : (
-              <IconButton icon="plus" size={16} iconColor={theme.colors.primary} style={styles.plusBtn} />
-            )}
+            <Text style={[styles.resultName, onRoster && { color: "#aaa" }]}>{result.name}</Text>
+            {onRoster
+              ? <Text style={styles.onRosterLabel}>On roster</Text>
+              : <IconButton icon="plus" size={16} iconColor={theme.colors.primary} style={styles.plusBtn} />
+            }
           </TouchableOpacity>
         );
       })}
@@ -449,38 +564,22 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, gap: 12, paddingBottom: 40 },
+  card: { borderRadius: 14, overflow: "hidden", backgroundColor: "#fff" },
 
-  card: {
-    borderRadius: 14,
-    overflow: "hidden",
-    backgroundColor: "#fff",
-  },
-
-  // Add player header
-  addHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
+  cardHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingVertical: 12 },
+  cardTitle: { fontSize: 15, fontWeight: "700", letterSpacing: 0.1 },
   chevron: { margin: 0 },
 
-  // Section headings
-  sectionTitle: { fontSize: 15, fontWeight: "700", letterSpacing: 0.1 },
-
-  // Roster header
-  rosterHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f0f0f0",
-  },
+  // Active roster header
+  rosterHeaderRight: { flexDirection: "row", alignItems: "center" },
   countBadge: { fontSize: 13, fontWeight: "700" },
+
+  // Save-as row
+  saveRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 12 },
+  saveInput: { flex: 1, height: 38 },
+
   emptyText: { color: "#aaa", textAlign: "center", paddingVertical: 20, fontSize: 13 },
+  errorText: { color: "#c62828", fontSize: 12, marginHorizontal: 16, marginBottom: 8 },
 
   // Roster rows
   rosterRow: { paddingHorizontal: 16, paddingVertical: 10 },
@@ -496,36 +595,37 @@ const styles = StyleSheet.create({
   actionBtn: { margin: 0, width: 32, height: 32 },
 
   // Edit panel
-  editPanel: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: "#f8f5ff",
-    borderRadius: 10,
-  },
+  editPanel: { marginTop: 8, padding: 12, backgroundColor: "#f8f5ff", borderRadius: 10 },
   editLabel: { fontSize: 12, marginBottom: 8 },
   posChipRow: { flexDirection: "row", gap: 6, flexWrap: "wrap", marginBottom: 10 },
   posChip: { height: 30 },
   posChipText: { fontSize: 12 },
   editActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
 
-  // Search panel
+  // Saved rosters
+  savedHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  savedCountPill: { backgroundColor: "#6750a4", borderRadius: 10, paddingHorizontal: 7, paddingVertical: 2 },
+  savedCountText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+  savedRow: { paddingHorizontal: 16, paddingVertical: 10 },
+  savedRowMain: { flexDirection: "row", alignItems: "center" },
+  savedInfo: { flex: 1 },
+  savedName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
+  savedMeta: { fontSize: 11, color: "#888", marginTop: 1 },
+  savedActions: { flexDirection: "row", alignItems: "center" },
+  savedPlayers: { fontSize: 11, color: "#aaa", marginTop: 4, lineHeight: 16 },
+  renameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+
+  // Search
   searchPanel: { paddingHorizontal: 12, paddingBottom: 12 },
   searchBar: { marginBottom: 4, backgroundColor: "#f5f5f5", borderRadius: 10 },
   noResults: { color: "#aaa", textAlign: "center", padding: 12, fontSize: 13 },
-  searchResult: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: "#ebebeb",
-  },
+  searchResult: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#ebebeb" },
   searchResultDim: { opacity: 0.45 },
   resultName: { flex: 1, fontSize: 14, fontWeight: "500", color: "#1a1a1a" },
   onRosterLabel: { fontSize: 12, color: "#6750a4", fontWeight: "500" },
   plusBtn: { margin: 0, width: 28, height: 28 },
 
-  // Confirm panel
+  // Confirm
   confirmPanel: { padding: 16 },
   confirmHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 },
   confirmName: { fontSize: 17, fontWeight: "700" },
@@ -533,6 +633,5 @@ const styles = StyleSheet.create({
   posLabel: { fontSize: 12, marginBottom: 8 },
   addBtn: { marginTop: 12 },
   spinner: { marginVertical: 12 },
-  errorText: { color: "#c62828", fontSize: 12, marginTop: 6 },
   warningText: { color: "#e65100", fontSize: 12, fontWeight: "600", marginBottom: 6 },
 });

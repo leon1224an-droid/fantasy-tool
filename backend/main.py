@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .database import dispose_db, get_db, init_db
 from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
 from .ingestion.schedule import PLAYOFF_WEEKS, ingest_schedule
-from .models import GameDay, Player, PlayerProjection, TeamSchedule
+from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
 
@@ -631,6 +631,142 @@ async def update_roster_positions(
         await db.execute(select(Player).where(Player.name == player_name))
     ).scalar_one()
     return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active)
+
+
+# ---------------------------------------------------------------------------
+# Saved roster schemas + routes
+# ---------------------------------------------------------------------------
+class SavedRosterEntry(BaseModel):
+    name: str
+    team: str
+    positions: list[str] = []
+
+
+class SavedRosterSchema(BaseModel):
+    id: int
+    name: str
+    players: list[SavedRosterEntry]
+    created_at: str
+
+
+class SavedRosterRequest(BaseModel):
+    name: str
+    players: list[SavedRosterEntry]
+
+
+class RenameSavedRosterRequest(BaseModel):
+    name: str
+
+
+def _to_schema(r: SavedRoster) -> SavedRosterSchema:
+    return SavedRosterSchema(
+        id=r.id,
+        name=r.name,
+        players=[SavedRosterEntry(**p) for p in (r.players or [])],
+        created_at=r.created_at.isoformat(),
+    )
+
+
+@app.get("/saved-rosters", response_model=list[SavedRosterSchema], tags=["saved-rosters"])
+async def list_saved_rosters(db: AsyncSession = Depends(get_db)):
+    """Return all saved rosters ordered by creation time."""
+    rows = (
+        await db.execute(select(SavedRoster).order_by(SavedRoster.created_at))
+    ).scalars().all()
+    return [_to_schema(r) for r in rows]
+
+
+@app.post("/saved-rosters", response_model=SavedRosterSchema, tags=["saved-rosters"])
+async def create_saved_roster(body: SavedRosterRequest, db: AsyncSession = Depends(get_db)):
+    """Create a new named roster snapshot."""
+    existing = (
+        await db.execute(select(SavedRoster).where(SavedRoster.name == body.name))
+    ).scalar_one_or_none()
+    if existing:
+        raise HTTPException(status_code=400, detail=f"A roster named '{body.name}' already exists.")
+    row = SavedRoster(name=body.name, players=[p.model_dump() for p in body.players])
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    return _to_schema(row)
+
+
+@app.put("/saved-rosters/{roster_id}", response_model=SavedRosterSchema, tags=["saved-rosters"])
+async def update_saved_roster(
+    roster_id: int, body: SavedRosterRequest, db: AsyncSession = Depends(get_db)
+):
+    """Replace the name and player list of a saved roster."""
+    row = (
+        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Saved roster not found.")
+    # Check name uniqueness if changing
+    if body.name != row.name:
+        conflict = (
+            await db.execute(select(SavedRoster).where(SavedRoster.name == body.name))
+        ).scalar_one_or_none()
+        if conflict:
+            raise HTTPException(status_code=400, detail=f"A roster named '{body.name}' already exists.")
+    row.name = body.name
+    row.players = [p.model_dump() for p in body.players]
+    await db.commit()
+    await db.refresh(row)
+    return _to_schema(row)
+
+
+@app.delete("/saved-rosters/{roster_id}", tags=["saved-rosters"])
+async def delete_saved_roster(roster_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a saved roster."""
+    row = (
+        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+    ).scalar_one_or_none()
+    if not row:
+        raise HTTPException(status_code=404, detail="Saved roster not found.")
+    await db.delete(row)
+    await db.commit()
+    return {"status": "ok", "deleted": roster_id}
+
+
+@app.post("/saved-rosters/{roster_id}/activate", response_model=list[RosterPlayer], tags=["saved-rosters"])
+async def activate_saved_roster(roster_id: int, db: AsyncSession = Depends(get_db)):
+    """
+    Set the active roster to the players in this saved roster.
+    Deactivates all current active players, then activates (or inserts) each
+    player from the saved roster.
+    """
+    saved = (
+        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+    ).scalar_one_or_none()
+    if not saved:
+        raise HTTPException(status_code=404, detail="Saved roster not found.")
+
+    # Deactivate everyone currently active
+    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+
+    # Activate/insert each player from the saved roster
+    for entry in (saved.players or []):
+        stmt = (
+            pg_insert(Player)
+            .values(
+                name=entry["name"],
+                team=entry["team"],
+                positions=entry.get("positions", []),
+                is_active=True,
+            )
+            .on_conflict_do_update(
+                constraint="uq_players_name",
+                set_={"team": entry["team"], "positions": entry.get("positions", []), "is_active": True},
+            )
+        )
+        await db.execute(stmt)
+
+    await db.commit()
+
+    active = (
+        await db.execute(select(Player).where(Player.is_active == True).order_by(Player.name))
+    ).scalars().all()
+    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True) for p in active]
 
 
 @app.get("/player-grid", response_model=list[PlayerGridRow], tags=["data"])
