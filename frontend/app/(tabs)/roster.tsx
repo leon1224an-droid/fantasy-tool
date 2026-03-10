@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from "react";
-import { Alert, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { Alert, Platform, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
   Button,
@@ -304,25 +304,27 @@ function SavedRosters() {
   });
 
   const confirmActivate = (roster: SavedRosterSchema) => {
-    Alert.alert(
-      "Set as Active Roster",
-      `Replace your current active roster with "${roster.name}"? This will deactivate your current players.`,
-      [
+    const msg = `Replace your current active roster with "${roster.name}"? This will deactivate your current players.`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) activateMutation.mutate(roster.id);
+    } else {
+      Alert.alert("Set as Active Roster", msg, [
         { text: "Cancel", style: "cancel" },
         { text: "Activate", style: "destructive", onPress: () => activateMutation.mutate(roster.id) },
-      ]
-    );
+      ]);
+    }
   };
 
   const confirmDelete = (roster: SavedRosterSchema) => {
-    Alert.alert(
-      "Delete Roster",
-      `Delete "${roster.name}"?`,
-      [
+    const msg = `Delete "${roster.name}"?`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) deleteMutation.mutate(roster.id);
+    } else {
+      Alert.alert("Delete Roster", msg, [
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: () => deleteMutation.mutate(roster.id) },
-      ]
-    );
+      ]);
+    }
   };
 
   return (
