@@ -32,6 +32,11 @@ db_url = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://postgres:postgres@localhost:5432/fantasy_tool",
 )
+# Normalize plain postgresql:// or postgres:// URLs (e.g. from Railway/Heroku).
+if db_url.startswith("postgres://"):
+    db_url = db_url.replace("postgres://", "postgresql+asyncpg://", 1)
+elif db_url.startswith("postgresql://") and "+asyncpg" not in db_url:
+    db_url = db_url.replace("postgresql://", "postgresql+asyncpg://", 1)
 # Alembic needs the sync dialect for offline mode; swap asyncpg → psycopg2.
 sync_url = db_url.replace("postgresql+asyncpg://", "postgresql+psycopg2://")
 config.set_main_option("sqlalchemy.url", sync_url)
