@@ -58,7 +58,7 @@ export default function ScheduleScreen() {
       )}
 
       {rows.length > 0 && (
-        <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <ScrollView style={styles.flex1} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
           <Surface style={styles.surface} elevation={1}>
             {/* Header */}
             <View style={styles.tableHeader}>
@@ -106,6 +106,7 @@ export default function ScheduleScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  flex1: { flex: 1 },
   scroll: { padding: 16, paddingBottom: 32 },
   surface: { borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
 

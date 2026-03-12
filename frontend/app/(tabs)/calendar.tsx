@@ -70,7 +70,7 @@ function WeekTable({ weekData, theme }: { weekData: WeeklyCalendarResponse; them
   };
 
   return (
-    <ScrollView contentContainerStyle={styles.scrollOuter} showsVerticalScrollIndicator={false}>
+    <ScrollView style={styles.flex1} contentContainerStyle={styles.scrollOuter} showsVerticalScrollIndicator={false}>
       {/* Weekly totals summary */}
       <View style={styles.weekSummary}>
         <WeekStatBox label="Total Games" value={totalGames} color="#1565c0" />
@@ -210,6 +210,7 @@ function formatName(name: string): string {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  flex1: { flex: 1 },
   emptyText: { color: "#888", textAlign: "center", margin: 32, fontSize: 14 },
   scrollOuter: { padding: 16, paddingBottom: 40, alignItems: "center" },
 

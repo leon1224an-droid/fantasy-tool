@@ -41,14 +41,16 @@ export default function PlayerGridScreen() {
         <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />
       )}
 
-      {data && viewMode === "summary" && <SummaryView data={data} />}
-      {data && viewMode === "grid" && <GridView data={data} week={week} setWeek={setWeek} />}
+      <View style={styles.flex1}>
+        {data && viewMode === "summary" && <SummaryView data={data} />}
+        {data && viewMode === "grid" && <GridView data={data} week={week} setWeek={setWeek} />}
 
-      {!isLoading && !error && !data && (
-        <Text style={styles.emptyText}>
-          No data. Run "Refresh Data" on the Dashboard first.
-        </Text>
-      )}
+        {!isLoading && !error && !data && (
+          <Text style={styles.emptyText}>
+            No data. Run "Refresh Data" on the Dashboard first.
+          </Text>
+        )}
+      </View>
     </View>
   );
 }
@@ -66,8 +68,9 @@ function SummaryView({ data }: { data: PlayerGridRow[] }) {
   const totalPlayable = sorted.reduce((s, p) => s + p.playable_grand_total, 0);
 
   return (
-    <ScrollView>
-      <DataTable>
+    <ScrollView style={styles.flex1}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+      <DataTable style={styles.summaryTable}>
         <DataTable.Header>
           <DataTable.Title style={styles.nameCol}>Player</DataTable.Title>
           <DataTable.Title numeric style={styles.numCol}>W21</DataTable.Title>
@@ -126,6 +129,7 @@ function SummaryView({ data }: { data: PlayerGridRow[] }) {
           </DataTable.Cell>
         </DataTable.Row>
       </DataTable>
+      </ScrollView>
 
       <View style={styles.legend}>
         <Text style={styles.legendTitle}>Raw vs Start explained:</Text>
@@ -181,7 +185,7 @@ function GridView({
   };
 
   return (
-    <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
+    <ScrollView style={styles.flex1} contentContainerStyle={{ paddingBottom: 20 }}>
       <View style={styles.weekTabRow}>
         <SegmentedButtons
           value={week}
@@ -250,6 +254,8 @@ function GridView({
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
+  flex1: { flex: 1 },
+  summaryTable: { minWidth: 380 },
   title: { fontSize: 22, fontWeight: "700", marginTop: 16, marginHorizontal: 16 },
   subtitle: { fontSize: 13, marginHorizontal: 16, marginBottom: 4 },
   controls: { marginHorizontal: 16, marginVertical: 10 },
