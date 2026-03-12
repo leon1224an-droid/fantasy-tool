@@ -78,6 +78,7 @@ function WeekTable({ weekData, theme }: { weekData: WeeklyCalendarResponse; them
         <WeekStatBox label="Benched" value={totalBenched} color={totalBenched > 0 ? "#e65100" : "#9e9e9e"} />
       </View>
 
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tableScrollH}>
       <Surface style={styles.tableSurface} elevation={1}>
         <View>
           {/* ---- Day header row ---- */}
@@ -170,6 +171,7 @@ function WeekTable({ weekData, theme }: { weekData: WeeklyCalendarResponse; them
           </View>
         </View>
       </Surface>
+      </ScrollView>
 
       {/* Legend */}
       <View style={styles.legend}>
@@ -212,9 +214,9 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   flex1: { flex: 1 },
   emptyText: { color: "#888", textAlign: "center", margin: 32, fontSize: 14 },
-  scrollOuter: { padding: 16, paddingBottom: 40, alignItems: "center" },
+  scrollOuter: { padding: 16, paddingBottom: 40 },
 
-  weekSummary: { flexDirection: "row", gap: 10, marginBottom: 12, width: "100%" },
+  weekSummary: { flexDirection: "row", gap: 10, marginBottom: 12 },
   weekStatBox: {
     flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 12,
     backgroundColor: "#fff", borderWidth: 1,
@@ -222,11 +224,11 @@ const styles = StyleSheet.create({
   weekStatValue: { fontSize: 24, fontWeight: "800", lineHeight: 28 },
   weekStatLabel: { fontSize: 11, color: "#888", marginTop: 2 },
 
+  tableScrollH: { marginBottom: 4 },
   tableSurface: {
     borderRadius: 14,
     overflow: "hidden",
     backgroundColor: "#fff",
-    width: "100%",
   },
 
   // Rows
@@ -296,7 +298,7 @@ const styles = StyleSheet.create({
   totalTextDim: { color: "#90a4ae" },
 
   // Legend
-  legend: { marginTop: 14, padding: 12, backgroundColor: "#f5f5f5", borderRadius: 12, width: "100%" },
+  legend: { marginTop: 14, padding: 12, backgroundColor: "#f5f5f5", borderRadius: 12 },
   legendRow: { flexDirection: "row", gap: 14, marginBottom: 6 },
   legendItem: { flexDirection: "row", alignItems: "center", gap: 5 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },

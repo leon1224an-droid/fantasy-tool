@@ -172,11 +172,11 @@ function GridView({
     return data[0].days.filter((d) => week === "all" || String(d.week_num) === week);
   }, [data, week]);
 
-  // Dynamic column widths to fill screen
+  // Dynamic column widths — min 36px so individual weeks fill screen, "all" scrolls horizontally
   const NAME_COL = 90;
   const TOT_COL = 32;
   const H_PAD = 32;
-  const DAY_COL = Math.max(32, Math.floor((screenWidth - H_PAD - NAME_COL - TOT_COL) / (allDays.length || 1)));
+  const DAY_COL = Math.max(36, Math.floor((screenWidth - H_PAD - NAME_COL - TOT_COL) / (allDays.length || 1)));
 
   // Abbreviate day label: "Mon 3/16" → "M\n3/16"
   const shortLabel = (label: string) => {
@@ -199,6 +199,7 @@ function GridView({
         />
       </View>
 
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.gridScrollH}>
       <View style={styles.gridSurface}>
         {/* Header row */}
         <View style={[styles.gridRow, styles.gridHeader]}>
@@ -241,6 +242,7 @@ function GridView({
           );
         })}
       </View>
+      </ScrollView>
 
       <View style={styles.gridLegend}>
         <View style={[styles.gameDot, styles.gameDotStart, { width: 12, height: 12 }]} />
@@ -279,7 +281,8 @@ const styles = StyleSheet.create({
 
   // Grid
   weekTabRow: { marginHorizontal: 12, marginVertical: 10 },
-  gridSurface: { marginHorizontal: 16, borderRadius: 14, overflow: "hidden", backgroundColor: "#fff", elevation: 1 },
+  gridScrollH: { marginHorizontal: 16 },
+  gridSurface: { borderRadius: 14, overflow: "hidden", backgroundColor: "#fff", elevation: 1 },
   gridRow: { flexDirection: "row", alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#efefef" },
   gridRowAlt: { backgroundColor: "#fafafa" },
   gridHeader: { backgroundColor: "#6750a4" },
