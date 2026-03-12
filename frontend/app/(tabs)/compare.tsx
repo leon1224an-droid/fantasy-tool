@@ -1,13 +1,11 @@
 /**
- * Compare two rosters side-by-side by total games per week.
- * Players can be picked from the active roster, searched from the NBA,
- * or loaded from a saved roster snapshot.
+ * Compare two rosters side-by-side by playable starts per week.
+ * Uses the /simulate-schedule endpoint to account for position constraints.
  */
 import React, { useState, useMemo, useCallback } from "react";
 import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
-  Button,
   Divider,
   IconButton,
   Searchbar,
@@ -17,13 +15,14 @@ import {
 } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import {
-  getAllSchedule,
   getRoster,
   getSavedRosters,
   searchPlayers,
   getPlayerInfo,
+  simulateSchedule,
   NBAPlayerSearchResult,
   SavedRosterSchema,
+  SimulateScheduleResponse,
 } from "../../lib/api";
 
 const WEEKS = [21, 22, 23] as const;
@@ -31,6 +30,7 @@ const WEEKS = [21, 22, 23] as const;
 interface ComparePlayer {
   name: string;
   team: string;
+  positions: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -42,26 +42,34 @@ export default function CompareScreen() {
   const [rosterA, setRosterA] = useState<ComparePlayer[]>([]);
   const [rosterB, setRosterB] = useState<ComparePlayer[]>([]);
 
-  const { data: allSchedule, isLoading: schedLoading } = useQuery({
-    queryKey: ["schedule-all"],
-    queryFn: getAllSchedule,
+  // Stable keys so the query only re-runs when roster actually changes
+  const keyA = rosterA.map((p) => p.name).sort().join(",");
+  const keyB = rosterB.map((p) => p.name).sort().join(",");
+
+  const { data: simA, isFetching: loadingA } = useQuery({
+    queryKey: ["simulate", keyA],
+    queryFn: () => simulateSchedule(rosterA),
+    enabled: rosterA.length > 0,
+    staleTime: 60_000,
   });
 
-  const gamesLookup = useMemo(() => {
-    const map: Record<string, Record<number, number>> = {};
-    if (!allSchedule) return map;
-    for (const row of allSchedule) {
-      if (!map[row.team]) map[row.team] = {};
-      map[row.team][row.week_num] = row.games_count;
-    }
-    return map;
-  }, [allSchedule]);
+  const { data: simB, isFetching: loadingB } = useQuery({
+    queryKey: ["simulate", keyB],
+    queryFn: () => simulateSchedule(rosterB),
+    enabled: rosterB.length > 0,
+    staleTime: 60_000,
+  });
 
-  const weekGames = (team: string, week: number) => gamesLookup[team]?.[week] ?? 0;
-  const rosterTotal = (roster: ComparePlayer[], week: number) =>
-    roster.reduce((s, p) => s + weekGames(p.team, week), 0);
-  const grandTotal = (roster: ComparePlayer[]) =>
-    WEEKS.reduce((s, w) => s + rosterTotal(roster, w), 0);
+  // Build {playerName: {weekNum: starts}} lookups from simulation results
+  const startsMapA = useMemo(() => buildStartsMap(simA), [simA]);
+  const startsMapB = useMemo(() => buildStartsMap(simB), [simB]);
+
+  const weekTotalA = (w: number) =>
+    rosterA.reduce((s, p) => s + (startsMapA[p.name]?.[w] ?? 0), 0);
+  const weekTotalB = (w: number) =>
+    rosterB.reduce((s, p) => s + (startsMapB[p.name]?.[w] ?? 0), 0);
+  const grandA = WEEKS.reduce((s, w) => s + weekTotalA(w), 0);
+  const grandB = WEEKS.reduce((s, w) => s + weekTotalB(w), 0);
 
   const removeA = (name: string) => setRosterA((r) => r.filter((p) => p.name !== name));
   const removeB = (name: string) => setRosterB((r) => r.filter((p) => p.name !== name));
@@ -73,23 +81,12 @@ export default function CompareScreen() {
   };
 
   const loadSavedToA = (roster: SavedRosterSchema) =>
-    setRosterA(roster.players.map((p) => ({ name: p.name, team: p.team })));
+    setRosterA(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
   const loadSavedToB = (roster: SavedRosterSchema) =>
-    setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team })));
+    setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
 
-  const totA = WEEKS.map((w) => rosterTotal(rosterA, w));
-  const totB = WEEKS.map((w) => rosterTotal(rosterB, w));
-  const grandA = grandTotal(rosterA);
-  const grandB = grandTotal(rosterB);
-
-  if (schedLoading) {
-    return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" />
-        <Text style={styles.loadingText}>Loading schedule…</Text>
-      </View>
-    );
-  }
+  const totA = WEEKS.map((w) => weekTotalA(w));
+  const totB = WEEKS.map((w) => weekTotalB(w));
 
   return (
     <ScrollView
@@ -100,6 +97,12 @@ export default function CompareScreen() {
       {/* Totals comparison bar */}
       {(rosterA.length > 0 || rosterB.length > 0) && (
         <Surface style={styles.comparisonBar} elevation={1}>
+          {(loadingA || loadingB) && (
+            <View style={styles.simLoading}>
+              <ActivityIndicator size={14} />
+              <Text style={styles.simLoadingText}>Simulating schedule…</Text>
+            </View>
+          )}
           {WEEKS.map((w, i) => (
             <ComparisonRow
               key={w}
@@ -117,6 +120,7 @@ export default function CompareScreen() {
             hasData={rosterA.length > 0 && rosterB.length > 0}
             isTotal
           />
+          <Text style={styles.simNote}>Playable starts (position-constrained)</Text>
         </Surface>
       )}
 
@@ -129,8 +133,8 @@ export default function CompareScreen() {
           onRemove={removeA}
           onAdd={addToA}
           onLoadSaved={loadSavedToA}
-          otherNames={new Set(rosterB.map((p) => p.name))}
-          gamesLookup={gamesLookup}
+          startsMap={startsMapA}
+          isLoading={loadingA}
         />
         <RosterPanel
           side="B"
@@ -139,18 +143,30 @@ export default function CompareScreen() {
           onRemove={removeB}
           onAdd={addToB}
           onLoadSaved={loadSavedToB}
-          otherNames={new Set(rosterA.map((p) => p.name))}
-          gamesLookup={gamesLookup}
+          startsMap={startsMapB}
+          isLoading={loadingB}
         />
       </View>
 
       {rosterA.length === 0 && rosterB.length === 0 && (
         <Text style={styles.hint}>
-          Add players or load a saved roster into each side to compare playoff game totals.
+          Add players or load a saved roster into each side to compare playable starts.
         </Text>
       )}
     </ScrollView>
   );
+}
+
+function buildStartsMap(sim: SimulateScheduleResponse | undefined): Record<string, Record<number, number>> {
+  if (!sim) return {};
+  const map: Record<string, Record<number, number>> = {};
+  for (const p of sim.players) {
+    map[p.name] = {};
+    for (const w of p.weeks) {
+      map[p.name][w.week_num] = w.starts;
+    }
+  }
+  return map;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,7 +201,7 @@ function ComparisonRow({
 // Roster panel
 // ---------------------------------------------------------------------------
 function RosterPanel({
-  side, color, players, onRemove, onAdd, onLoadSaved, otherNames, gamesLookup,
+  side, color, players, onRemove, onAdd, onLoadSaved, startsMap, isLoading,
 }: {
   side: "A" | "B";
   color: string;
@@ -193,8 +209,8 @@ function RosterPanel({
   onRemove: (name: string) => void;
   onAdd: (p: ComparePlayer) => void;
   onLoadSaved: (roster: SavedRosterSchema) => void;
-  otherNames: Set<string>;
-  gamesLookup: Record<string, Record<number, number>>;
+  startsMap: Record<string, Record<number, number>>;
+  isLoading: boolean;
 }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
@@ -246,13 +262,17 @@ function RosterPanel({
 
       {/* Player list */}
       {players.map((p) => {
-        const games = WEEKS.map((w) => gamesLookup[p.team]?.[w] ?? 0);
-        const total = games.reduce((s, g) => s + g, 0);
+        const weekStarts = WEEKS.map((w) => startsMap[p.name]?.[w] ?? (isLoading ? "…" : 0));
+        const totalStarts = isLoading
+          ? "…"
+          : WEEKS.reduce((s, w) => s + (startsMap[p.name]?.[w] ?? 0), 0);
         return (
           <View key={p.name} style={styles.playerRow}>
             <View style={styles.playerInfo}>
               <Text style={styles.playerName} numberOfLines={1}>{p.name}</Text>
-              <Text style={styles.playerMeta}>{p.team} · {games.join("-")} ({total}G)</Text>
+              <Text style={styles.playerMeta}>
+                {p.team} · {weekStarts.join("-")} ({totalStarts}S)
+              </Text>
             </View>
             <IconButton icon="close" size={16} iconColor="#bbb" onPress={() => onRemove(p.name)} style={styles.removeBtn} />
           </View>
@@ -263,17 +283,20 @@ function RosterPanel({
       {players.length > 0 && (
         <View style={[styles.panelTotals, { backgroundColor: color + "10" }]}>
           {WEEKS.map((w) => {
-            const t = players.reduce((s, p) => s + (gamesLookup[p.team]?.[w] ?? 0), 0);
+            const t = players.reduce((s, p) => s + (startsMap[p.name]?.[w] ?? 0), 0);
             return (
               <View key={w} style={styles.panelTotalCell}>
-                <Text style={[styles.panelTotalVal, { color }]}>{t}</Text>
+                <Text style={[styles.panelTotalVal, { color }]}>{isLoading ? "…" : t}</Text>
                 <Text style={styles.panelTotalLbl}>Wk{w}</Text>
               </View>
             );
           })}
           <View style={styles.panelTotalCell}>
             <Text style={[styles.panelTotalVal, { color }]}>
-              {WEEKS.reduce((s, w) => s + players.reduce((ss, p) => ss + (gamesLookup[p.team]?.[w] ?? 0), 0), 0)}
+              {isLoading ? "…" : players.reduce(
+                (s, p) => s + WEEKS.reduce((ss, w) => ss + (startsMap[p.name]?.[w] ?? 0), 0),
+                0
+              )}
             </Text>
             <Text style={styles.panelTotalLbl}>Total</Text>
           </View>
@@ -382,7 +405,7 @@ function PlayerPicker({
     setLoadingId(result.player_id);
     try {
       const info = await getPlayerInfo(result.player_id);
-      onSelect({ name: info.name, team: info.team });
+      onSelect({ name: info.name, team: info.team, positions: info.positions });
       setLoadingId(null);
     } catch {
       setLoadingId(null);
@@ -400,7 +423,12 @@ function PlayerPicker({
         elevation={0}
       />
       {rosterMatches.slice(0, 5).map((p) => (
-        <TouchableOpacity key={p.name} style={styles.pickerRow} onPress={() => onSelect({ name: p.name, team: p.team })} activeOpacity={0.6}>
+        <TouchableOpacity
+          key={p.name}
+          style={styles.pickerRow}
+          onPress={() => onSelect({ name: p.name, team: p.team, positions: p.positions })}
+          activeOpacity={0.6}
+        >
           <View style={{ flex: 1 }}>
             <Text style={styles.pickerName}>{p.name}</Text>
             <Text style={styles.pickerMeta}>{p.team} · roster</Text>
@@ -431,15 +459,17 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 40, gap: 12 },
   center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
-  loadingText: { color: "#888" },
   hint: { color: "#aaa", textAlign: "center", fontSize: 13, marginTop: 8 },
 
   // Comparison bar
   comparisonBar: { borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
+  simLoading: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingTop: 10 },
+  simLoadingText: { fontSize: 11, color: "#888" },
+  simNote: { fontSize: 10, color: "#aaa", textAlign: "center", paddingBottom: 10 },
   compRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 16 },
   compRowTotal: { backgroundColor: "#fafafa" },
-  compValue: { fontSize: 22, fontWeight: "800", width: 44, textAlign: "center" },
-  compValueWinner: { fontSize: 26 },
+  compValue: { fontSize: 22, fontWeight: "800", minWidth: 52, textAlign: "center" },
+  compValueWinner: { fontSize: 26, minWidth: 58 },
   compMid: { flex: 1, alignItems: "center" },
   compLabel: { fontSize: 13, color: "#666" },
   compLabelTotal: { fontWeight: "700", color: "#1a1a1a" },

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { DataTable, SegmentedButtons, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import { getPlayerGrid, PlayerGridRow } from "../../lib/api";
@@ -161,16 +161,27 @@ function GridView({
   week: "21" | "22" | "23" | "all";
   setWeek: (w: "21" | "22" | "23" | "all") => void;
 }) {
-  // Collect unique days for the selected week
+  const { width: screenWidth } = useWindowDimensions();
+
   const allDays = useMemo(() => {
     if (!data[0]) return [];
-    return data[0].days.filter(
-      (d) => week === "all" || String(d.week_num) === week
-    );
+    return data[0].days.filter((d) => week === "all" || String(d.week_num) === week);
   }, [data, week]);
 
+  // Dynamic column widths to fill screen
+  const NAME_COL = 90;
+  const TOT_COL = 32;
+  const H_PAD = 32;
+  const DAY_COL = Math.max(32, Math.floor((screenWidth - H_PAD - NAME_COL - TOT_COL) / (allDays.length || 1)));
+
+  // Abbreviate day label: "Mon 3/16" → "M\n3/16"
+  const shortLabel = (label: string) => {
+    const [day, date] = label.split(" ");
+    return `${day[0]}\n${date ?? ""}`;
+  };
+
   return (
-    <ScrollView>
+    <ScrollView contentContainerStyle={{ paddingBottom: 20 }}>
       <View style={styles.weekTabRow}>
         <SegmentedButtons
           value={week}
@@ -184,59 +195,54 @@ function GridView({
         />
       </View>
 
-      <ScrollView horizontal>
-        <View>
-          {/* Header row */}
-          <View style={[styles.gridRow, styles.gridHeader]}>
-            <Text style={[styles.gridCell, styles.gridNameCell, styles.gridHeaderText]}>
-              Player
-            </Text>
-            {allDays.map((d) => (
-              <Text key={d.date} style={[styles.gridCell, styles.gridHeaderText]} numberOfLines={2}>
-                {d.day_label}
-              </Text>
-            ))}
-            <Text style={[styles.gridCell, styles.gridHeaderText]}>Tot</Text>
+      <View style={styles.gridSurface}>
+        {/* Header row */}
+        <View style={[styles.gridRow, styles.gridHeader]}>
+          <View style={[styles.gridNameCell, { width: NAME_COL }]}>
+            <Text style={styles.gridHeaderText}>Player</Text>
           </View>
-
-          {/* Player rows */}
-          {data.map((row) => {
-            const filteredDays = row.days.filter(
-              (d) => week === "all" || String(d.week_num) === week
-            );
-            const total = filteredDays.filter((d) => d.has_game).length;
-            return (
-              <View key={row.player} style={styles.gridRow}>
-                <View style={[styles.gridCell, styles.gridNameCell]}>
-                  <Text style={styles.gridName} numberOfLines={1}>{row.player}</Text>
-                  <Text style={styles.gridTeam}>{row.team}</Text>
-                </View>
-                {filteredDays.map((d) => (
-                  <View key={d.date} style={[styles.gridCell, styles.gridDayCell]}>
-                    {d.has_game && (
-                      <View style={[
-                        styles.gameDot,
-                        d.is_starting ? styles.gameDotStart : styles.gameDotBench,
-                      ]}>
-                        <Text style={styles.gameDotText}>
-                          {d.is_starting ? "●" : "○"}
-                        </Text>
-                      </View>
-                    )}
-                  </View>
-                ))}
-                <Text style={[styles.gridCell, styles.gridTotalText]}>{total}</Text>
-              </View>
-            );
-          })}
+          {allDays.map((d) => (
+            <View key={d.date} style={[styles.gridDayCell, { width: DAY_COL }]}>
+              <Text style={[styles.gridHeaderText, { fontSize: 9, textAlign: "center" }]} numberOfLines={2}>
+                {shortLabel(d.day_label)}
+              </Text>
+            </View>
+          ))}
+          <View style={[styles.gridDayCell, { width: TOT_COL }]}>
+            <Text style={styles.gridHeaderText}>G</Text>
+          </View>
         </View>
-      </ScrollView>
+
+        {/* Player rows */}
+        {data.map((row, idx) => {
+          const filteredDays = row.days.filter((d) => week === "all" || String(d.week_num) === week);
+          const total = filteredDays.filter((d) => d.has_game).length;
+          return (
+            <View key={row.player} style={[styles.gridRow, idx % 2 === 1 && styles.gridRowAlt]}>
+              <View style={[styles.gridNameCell, { width: NAME_COL }]}>
+                <Text style={styles.gridName} numberOfLines={1}>{row.player.split(" ").pop()}</Text>
+                <Text style={styles.gridTeam}>{row.team}</Text>
+              </View>
+              {filteredDays.map((d) => (
+                <View key={d.date} style={[styles.gridDayCell, { width: DAY_COL }]}>
+                  {d.has_game && (
+                    <View style={[styles.gameDot, d.is_starting ? styles.gameDotStart : styles.gameDotBench]} />
+                  )}
+                </View>
+              ))}
+              <View style={[styles.gridDayCell, { width: TOT_COL }]}>
+                <Text style={styles.gridTotalText}>{total}</Text>
+              </View>
+            </View>
+          );
+        })}
+      </View>
 
       <View style={styles.gridLegend}>
-        <Text style={styles.gridLegendItem}>● Green = starting that day</Text>
-        <Text style={[styles.gridLegendItem, { color: "#e65100" }]}>
-          ○ Orange = benched (position conflict)
-        </Text>
+        <View style={[styles.gameDot, styles.gameDotStart, { width: 12, height: 12 }]} />
+        <Text style={styles.gridLegendItem}>Starting</Text>
+        <View style={[styles.gameDot, styles.gameDotBench, { width: 12, height: 12, marginLeft: 16 }]} />
+        <Text style={[styles.gridLegendItem, { color: "#e65100" }]}>Benched</Text>
       </View>
     </ScrollView>
   );
@@ -267,19 +273,19 @@ const styles = StyleSheet.create({
 
   // Grid
   weekTabRow: { marginHorizontal: 12, marginVertical: 10 },
-  gridRow: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: "#eee" },
+  gridSurface: { marginHorizontal: 16, borderRadius: 14, overflow: "hidden", backgroundColor: "#fff", elevation: 1 },
+  gridRow: { flexDirection: "row", alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#efefef" },
+  gridRowAlt: { backgroundColor: "#fafafa" },
   gridHeader: { backgroundColor: "#6750a4" },
-  gridHeaderText: { color: "#fff", fontWeight: "700", fontSize: 11 },
-  gridCell: { width: 56, paddingVertical: 8, paddingHorizontal: 4, textAlign: "center", fontSize: 11 },
-  gridNameCell: { width: 120, textAlign: "left" },
-  gridName: { fontWeight: "600", fontSize: 12 },
-  gridTeam: { fontSize: 10, color: "#888" },
-  gridDayCell: { alignItems: "center", justifyContent: "center" },
-  gridTotalText: { fontWeight: "700", fontSize: 13, width: 40 },
-  gameDot: { width: 20, height: 20, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  gameDotStart: { backgroundColor: "transparent" },
-  gameDotBench: { backgroundColor: "transparent" },
-  gameDotText: { fontSize: 14 },
-  gridLegend: { flexDirection: "row", justifyContent: "space-around", padding: 12 },
+  gridHeaderText: { color: "#fff", fontWeight: "700", fontSize: 10 },
+  gridNameCell: { paddingVertical: 8, paddingHorizontal: 6, justifyContent: "center", borderRightWidth: 1, borderRightColor: "rgba(0,0,0,0.06)" },
+  gridName: { fontWeight: "600", fontSize: 11, color: "#1a1a1a" },
+  gridTeam: { fontSize: 9, color: "#888" },
+  gridDayCell: { alignItems: "center", justifyContent: "center", paddingVertical: 8, borderRightWidth: StyleSheet.hairlineWidth, borderRightColor: "#efefef" },
+  gridTotalText: { fontWeight: "800", fontSize: 12, color: "#6750a4" },
+  gameDot: { width: 10, height: 10, borderRadius: 5 },
+  gameDotStart: { backgroundColor: "#2e7d32" },
+  gameDotBench: { backgroundColor: "#e65100" },
+  gridLegend: { flexDirection: "row", alignItems: "center", justifyContent: "center", padding: 12, gap: 6 },
   gridLegendItem: { fontSize: 12, color: "#2e7d32", fontWeight: "600" },
 });

@@ -115,6 +115,17 @@ export function getAllSchedule(): Promise<ScheduleRow[]> {
   return apiFetch<ScheduleRow[]>("/schedule/all");
 }
 
+export interface TeamDayRow {
+  team: string;
+  date: string;
+  week_num: number;
+  day_label: string;
+}
+
+export function getTeamDays(): Promise<TeamDayRow[]> {
+  return apiFetch<TeamDayRow[]>("/team-days");
+}
+
 export function getProjections(week?: number): Promise<ProjectionRow[]> {
   const query = week != null ? `?week=${week}` : "";
   return apiFetch<ProjectionRow[]>(`/projections${query}`);
@@ -240,6 +251,33 @@ export function deleteSavedRoster(id: number): Promise<void> {
 
 export function activateSavedRoster(id: number): Promise<RosterPlayer[]> {
   return apiFetch<RosterPlayer[]>(`/saved-rosters/${id}/activate`, { method: "POST" });
+}
+
+// Schedule simulation
+export interface PlayerWeekStarts {
+  week_num: number;
+  starts: number;
+  raw_games: number;
+}
+
+export interface SimulatePlayerResult {
+  name: string;
+  team: string;
+  weeks: PlayerWeekStarts[];
+  total_starts: number;
+  total_raw_games: number;
+}
+
+export interface SimulateScheduleResponse {
+  players: SimulatePlayerResult[];
+}
+
+export function simulateSchedule(players: { name: string; team: string; positions: string[] }[]): Promise<SimulateScheduleResponse> {
+  return apiFetch<SimulateScheduleResponse>("/simulate-schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ players }),
+  });
 }
 
 export function updateRosterPositions(

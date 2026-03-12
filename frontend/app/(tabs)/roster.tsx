@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useMemo } from "react";
 import { Alert, Platform, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
@@ -84,6 +84,7 @@ function ActiveRoster() {
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [showLoadPicker, setShowLoadPicker] = useState(false);
+  const [loadedRoster, setLoadedRoster] = useState<{ id: number; name: string } | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["roster"],
@@ -108,23 +109,45 @@ function ActiveRoster() {
 
   const clearMutation = useMutation({
     mutationFn: clearRoster,
-    onSuccess: invalidateAll,
+    onSuccess: () => { invalidateAll(); setLoadedRoster(null); },
   });
 
   const activateMutation = useMutation({
-    mutationFn: activateSavedRoster,
-    onSuccess: () => { invalidateAll(); setShowLoadPicker(false); },
+    mutationFn: (r: { id: number; name: string }) => activateSavedRoster(r.id),
+    onSuccess: (_data, r) => { invalidateAll(); setShowLoadPicker(false); setLoadedRoster(r); },
   });
 
   const saveRosterMutation = useMutation({
     mutationFn: ({ name, players }: { name: string; players: SavedRosterEntry[] }) =>
       createSavedRoster(name, players),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ["saved-rosters"] });
       setSaving(false);
       setSaveName("");
+      setLoadedRoster({ id: saved.id, name: saved.name });
     },
   });
+
+  const updateRosterMutation = useMutation({
+    mutationFn: ({ id, name }: { id: number; name: string }) =>
+      updateSavedRoster(id, name, (data ?? []).map((p) => ({ name: p.name, team: p.team, positions: p.positions }))),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-rosters"] }),
+  });
+
+  // Auto-detect which saved roster matches the current active players (works across refreshes)
+  const detectedRoster = useMemo(() => {
+    if (!data || !savedRosters) return null;
+    const activeNames = new Set(data.map((p) => p.name));
+    return savedRosters.find((s) => {
+      const savedNames = new Set(s.players.map((p) => p.name));
+      return activeNames.size === savedNames.size && [...activeNames].every((n) => savedNames.has(n));
+    }) ?? null;
+  }, [data, savedRosters]);
+
+  // Effective roster for label + update button: detected match takes priority, fallback to session state
+  const activeLoadedRoster = detectedRoster
+    ? { id: detectedRoster.id, name: detectedRoster.name }
+    : loadedRoster;
 
   if (isLoading || error) {
     return <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />;
@@ -138,6 +161,19 @@ function ActiveRoster() {
       name: saveName.trim(),
       players: data.map((p) => ({ name: p.name, team: p.team, positions: p.positions })),
     });
+  };
+
+  const handleUpdate = () => {
+    if (!activeLoadedRoster) return;
+    const msg = `Update "${activeLoadedRoster.name}" with your current ${count} players?`;
+    if (Platform.OS === "web") {
+      if (window.confirm(msg)) updateRosterMutation.mutate(activeLoadedRoster);
+    } else {
+      Alert.alert("Update Roster", msg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Update", onPress: () => updateRosterMutation.mutate(activeLoadedRoster!) },
+      ]);
+    }
   };
 
   const handleClearAll = () => {
@@ -155,7 +191,12 @@ function ActiveRoster() {
   return (
     <Surface style={styles.card} elevation={1}>
       <View style={styles.cardHeader}>
-        <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>My Roster</Text>
+        <View style={styles.rosterTitleGroup}>
+          <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>My Roster</Text>
+          {activeLoadedRoster && (
+            <Text style={styles.loadedLabel} numberOfLines={1}>· {activeLoadedRoster.name}</Text>
+          )}
+        </View>
         <View style={styles.rosterHeaderRight}>
           <Text style={[styles.countBadge, { color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
             {count}/13
@@ -168,7 +209,7 @@ function ActiveRoster() {
             onPress={() => { setShowLoadPicker((v) => !v); setSaving(false); }}
             style={styles.actionBtn}
           />
-          {/* Save current roster */}
+          {/* Save as new */}
           <IconButton
             icon="content-save-outline"
             size={20}
@@ -176,6 +217,17 @@ function ActiveRoster() {
             onPress={() => { setSaving((v) => !v); setShowLoadPicker(false); }}
             style={styles.actionBtn}
           />
+          {/* Update loaded roster */}
+          {activeLoadedRoster && (
+            <IconButton
+              icon="content-save-edit-outline"
+              size={20}
+              iconColor="#2e7d32"
+              onPress={handleUpdate}
+              disabled={updateRosterMutation.isPending}
+              style={styles.actionBtn}
+            />
+          )}
           {/* Clear all */}
           {count > 0 && (
             <IconButton
@@ -200,14 +252,14 @@ function ActiveRoster() {
               <TouchableOpacity
                 key={r.id}
                 style={styles.loadPickerRow}
-                onPress={() => activateMutation.mutate(r.id)}
+                onPress={() => activateMutation.mutate(r)}
                 activeOpacity={0.6}
               >
                 <View style={styles.loadPickerInfo}>
                   <Text style={styles.loadPickerName}>{r.name}</Text>
                   <Text style={styles.loadPickerMeta}>{r.players.length} players</Text>
                 </View>
-                {activateMutation.isPending && activateMutation.variables === r.id
+                {activateMutation.isPending && activateMutation.variables?.id === r.id
                   ? <ActivityIndicator size={16} />
                   : <IconButton icon="swap-horizontal" size={18} iconColor="#1565c0" style={styles.actionBtn} />
                 }
@@ -382,6 +434,7 @@ function SavedRosters() {
       setEditingId(null);
     },
   });
+
 
   const confirmActivate = (roster: SavedRosterSchema) => {
     const msg = `Replace your current active roster with "${roster.name}"? This will deactivate your current players.`;
@@ -653,6 +706,8 @@ const styles = StyleSheet.create({
   chevron: { margin: 0 },
 
   // Active roster header
+  rosterTitleGroup: { flexDirection: "row", alignItems: "center", gap: 6, flex: 1, minWidth: 0 },
+  loadedLabel: { fontSize: 13, color: "#6750a4", fontWeight: "600", flexShrink: 1 },
   rosterHeaderRight: { flexDirection: "row", alignItems: "center" },
   countBadge: { fontSize: 13, fontWeight: "700" },
 

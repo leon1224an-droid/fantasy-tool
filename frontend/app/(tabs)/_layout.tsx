@@ -15,107 +15,54 @@ export default function TabLayout() {
         headerTintColor: theme.colors.onSurface,
       }}
     >
+      {/* Hidden tabs */}
+      <Tabs.Screen name="index"       options={{ href: null }} />
+      <Tabs.Screen name="lineup"      options={{ href: null }} />
+      <Tabs.Screen name="schedule"    options={{ href: null }} />
+      <Tabs.Screen name="projections" options={{ href: null }} />
+
       <Tabs.Screen
-        name="index"
+        name="roster"
         options={{
-          title: "Dashboard",
+          title: "Roster",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="view-dashboard"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="lineup"
-        options={{
-          title: "Lineup",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="basketball"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="schedule"
-        options={{
-          title: "Schedule",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="calendar-month"
-              size={size}
-              color={color}
-            />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="projections"
-        options={{
-          title: "Projections",
-          tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="chart-line"
-              size={size}
-              color={color}
-            />
+            <MaterialCommunityIcons name="account-group" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="calendar"
         options={{
-          title: "Calendar",
+          title: "Calendar View",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="calendar-today"
-              size={size}
-              color={color}
-            />
+            <MaterialCommunityIcons name="calendar-today" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="player-grid"
         options={{
-          title: "Grid",
+          title: "Player Game Grid",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="grid"
-              size={size}
-              color={color}
-            />
+            <MaterialCommunityIcons name="grid" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
-        name="roster"
+        name="teams"
         options={{
-          title: "Roster",
+          title: "Team Schedules",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="account-group"
-              size={size}
-              color={color}
-            />
+            <MaterialCommunityIcons name="trophy-outline" size={size} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="compare"
         options={{
-          title: "Compare",
+          title: "Matchup Comparison",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons
-              name="scale-balance"
-              size={size}
-              color={color}
-            />
+            <MaterialCommunityIcons name="scale-balance" size={size} color={color} />
           ),
         }}
       />
