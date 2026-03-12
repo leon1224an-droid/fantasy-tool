@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
+import { ScrollView, StyleSheet, useWindowDimensions, View } from "react-native";
 import { Chip, DataTable, SegmentedButtons, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import { getAllSchedule, getTeamDays } from "../../lib/api";
@@ -7,9 +7,6 @@ import { LoadingOrError } from "../../components/LoadingOrError";
 
 type ViewMode = "summary" | "grid";
 type WeekFilter = "21" | "22" | "23" | "all";
-const DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
-type Day = typeof DAYS[number];
-
 function gamesColor(n: number): string {
   if (n >= 4) return "#2e7d32";
   if (n === 3) return "#1565c0";
@@ -17,9 +14,8 @@ function gamesColor(n: number): string {
   return "#bdbdbd";
 }
 
-function dayOfWeek(dateStr: string): Day {
-  const d = new Date(dateStr + "T12:00:00");
-  return (["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const)[d.getDay()] as Day;
+function dayAbbrev(label: string): string {
+  return label.split(" ")[0]; // "Mon 3/16" → "Mon"
 }
 
 // ---------------------------------------------------------------------------
@@ -30,7 +26,7 @@ export default function TeamsScreen() {
   const [viewMode, setViewMode] = useState<ViewMode>("summary");
   const [week, setWeek] = useState<WeekFilter>("all");
   const [minGames, setMinGames] = useState(0);
-  const [dayFilter, setDayFilter] = useState<Set<Day>>(new Set());
+  const [dateFilter, setDateFilter] = useState<Set<string>>(new Set());
 
   const { data: scheduleData, isLoading: schedLoading, error: schedError, refetch } = useQuery({
     queryKey: ["schedule-all"],
@@ -89,32 +85,40 @@ export default function TeamsScreen() {
     return (row as Record<string, number>)[`w${w}`] ?? 0;
   };
 
-  const toggleDay = (d: Day) => setDayFilter((prev) => {
+  const toggleDate = (d: string) => setDateFilter((prev) => {
     const next = new Set(prev);
     next.has(d) ? next.delete(d) : next.add(d);
     return next;
   });
+
+  // Dates grouped by week for the filter UI
+  const datesByWeek = useMemo(() => {
+    const groups: Record<number, typeof allDates> = { 21: [], 22: [], 23: [] };
+    for (const d of allDates) {
+      groups[d.weekNum]?.push(d);
+    }
+    return groups;
+  }, [allDates]);
 
   // Filtered + sorted rows (applies to both views)
   const displayRows = useMemo(() => {
     return teamRows.filter((row) => {
       const games = weekGames(row, week);
       if (minGames > 0 && games < minGames) return false;
-      if (dayFilter.size > 0) {
-        const weekNums = week === "all" ? [21, 22, 23] : [parseInt(week)];
-        const playedDays = new Set<Day>();
-        for (const wn of weekNums) {
-          for (const date of teamDayMap[row.team]?.[wn] ?? []) {
-            playedDays.add(dayOfWeek(date));
+      if (dateFilter.size > 0) {
+        const gameDates = new Set<string>();
+        for (const wn of [21, 22, 23]) {
+          for (const d of teamDayMap[row.team]?.[wn] ?? new Set()) {
+            gameDates.add(d);
           }
         }
-        for (const d of dayFilter) {
-          if (!playedDays.has(d)) return false;
+        for (const d of dateFilter) {
+          if (!gameDates.has(d)) return false;
         }
       }
       return true;
     });
-  }, [teamRows, week, minGames, dayFilter, teamDayMap]);
+  }, [teamRows, week, minGames, dateFilter, teamDayMap]);
 
   return (
     <ScrollView style={[styles.container, { backgroundColor: theme.colors.background }]} contentContainerStyle={styles.scrollContent}>
@@ -162,20 +166,43 @@ export default function TeamsScreen() {
           </View>
         </View>
 
-        {/* Must play on */}
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterLabel}>Must play on</Text>
-          <View style={styles.chipRow}>
-            {DAYS.map((d) => (
-              <Chip key={d} selected={dayFilter.has(d)} onPress={() => toggleDay(d)} compact showSelectedOverlay style={styles.chip} textStyle={styles.chipText}>
-                {d}
-              </Chip>
-            ))}
-            {dayFilter.size > 0 && (
-              <Chip compact onPress={() => setDayFilter(new Set())} style={styles.clearChip} textStyle={styles.chipText}>Clear</Chip>
-            )}
+        {/* Must play on — specific dates grouped by week */}
+        {allDates.length > 0 && (
+          <View style={styles.filterGroup}>
+            <View style={styles.filterLabelRow}>
+              <Text style={styles.filterLabel}>Must play on</Text>
+              {dateFilter.size > 0 && (
+                <Chip compact onPress={() => setDateFilter(new Set())} style={styles.clearChip} textStyle={styles.chipText}>
+                  Clear ({dateFilter.size})
+                </Chip>
+              )}
+            </View>
+            {([21, 22, 23] as const).map((wk) => {
+              const wkDates = datesByWeek[wk];
+              if (!wkDates || wkDates.length === 0) return null;
+              return (
+                <View key={wk} style={styles.dateWeekRow}>
+                  <Text style={styles.dateWeekLabel}>Wk {wk}</Text>
+                  <View style={styles.chipRow}>
+                    {wkDates.map(({ date, label }) => (
+                      <Chip
+                        key={date}
+                        selected={dateFilter.has(date)}
+                        onPress={() => toggleDate(date)}
+                        compact
+                        showSelectedOverlay
+                        style={styles.chip}
+                        textStyle={styles.chipText}
+                      >
+                        {dayAbbrev(label)}
+                      </Chip>
+                    ))}
+                  </View>
+                </View>
+              );
+            })}
           </View>
-        </View>
+        )}
       </View>
 
       <Text style={styles.resultCount}>{displayRows.length} teams</Text>
@@ -273,9 +300,16 @@ function GridView({
   week: WeekFilter;
   setWeek: (w: WeekFilter) => void;
 }) {
+  const { width: screenWidth } = useWindowDimensions();
   const TEAM_COL = 48;
   const TOT_COL = 28;
-  const DAY_COL = 32;
+  const OUTER_PADDING = 32; // 16px each side
+  const MIN_DAY_COL = 28;
+  const availableForDays = screenWidth - OUTER_PADDING - TEAM_COL - TOT_COL;
+  const DAY_COL = dates.length > 0
+    ? Math.max(MIN_DAY_COL, Math.floor(availableForDays / dates.length))
+    : MIN_DAY_COL;
+  const totalWidth = TEAM_COL + dates.length * DAY_COL + TOT_COL;
 
   const shortLabel = (label: string) => {
     const [day, date] = label.split(" ");
@@ -297,8 +331,8 @@ function GridView({
         />
       </View>
 
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginHorizontal: 16 }}>
-        <View style={styles.gridSurface}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.gridScrollView}>
+        <View style={[styles.gridSurface, { width: totalWidth }]}>
             {/* Header */}
             <View style={[styles.gridRow, styles.gridHeader]}>
               <View style={[styles.gridTeamCell, { width: TEAM_COL }]}>
@@ -366,11 +400,14 @@ const styles = StyleSheet.create({
   // Filters
   filterRow: { marginHorizontal: 16, gap: 10, marginBottom: 6 },
   filterGroup: { gap: 6 },
+  filterLabelRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   filterLabel: { fontSize: 11, fontWeight: "700", color: "#555", textTransform: "uppercase", letterSpacing: 0.4 },
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6 },
   chip: { height: 28 },
   chipText: { fontSize: 11 },
   clearChip: { height: 28, backgroundColor: "#ffebee" },
+  dateWeekRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  dateWeekLabel: { fontSize: 10, fontWeight: "700", color: "#6750a4", width: 32, textTransform: "uppercase" },
   resultCount: { fontSize: 12, color: "#999", textAlign: "right", marginHorizontal: 16, marginBottom: 4 },
 
   // Summary
@@ -386,7 +423,8 @@ const styles = StyleSheet.create({
 
   // Grid
   weekTabRow: { marginHorizontal: 12, marginVertical: 10 },
-  gridSurface: { marginHorizontal: 16, borderRadius: 14, overflow: "hidden", backgroundColor: "#fff", elevation: 1 },
+  gridScrollView: { marginHorizontal: 16 },
+  gridSurface: { borderRadius: 14, overflow: "hidden", backgroundColor: "#fff", elevation: 1 },
   gridRow: { flexDirection: "row", alignItems: "center", borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#efefef" },
   gridRowAlt: { backgroundColor: "#fafafa" },
   gridHeader: { backgroundColor: "#6750a4" },

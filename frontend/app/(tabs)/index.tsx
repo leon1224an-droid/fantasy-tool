@@ -1,6 +1,6 @@
 import React from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { Button, Surface, Text, useTheme } from "react-native-paper";
+import { Button, Surface, Text, useTheme, Divider } from "react-native-paper";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { getCalendar, getRoster, getSavedRosters, ingestAll } from "../../lib/api";
 
@@ -116,6 +116,23 @@ export default function DashboardScreen() {
             ))}
           </Surface>
         )}
+
+        {roster && roster.length > 0 && (
+          <Surface style={styles.card} elevation={1}>
+            <Text style={styles.cardTitle}>My Roster ({roster.length})</Text>
+            <View style={styles.cardDivider} />
+            {roster.map((player, idx) => (
+              <View key={player.name} style={[styles.rosterRow, idx < roster.length - 1 && styles.rosterRowBorder]}>
+                <Text style={styles.rosterPlayerName} numberOfLines={1}>{player.name}</Text>
+                <View style={styles.rosterMeta}>
+                  <Text style={styles.rosterTeam}>{player.team}</Text>
+                  <Text style={styles.rosterDot}>·</Text>
+                  <Text style={styles.rosterPositions}>{player.positions.join(" / ")}</Text>
+                </View>
+              </View>
+            ))}
+          </Surface>
+        )}
       </ScrollView>
     </View>
   );
@@ -151,4 +168,12 @@ const styles = StyleSheet.create({
   weekLabel: { fontSize: 15, fontWeight: "600", color: "#1a1a1a" },
   weekDates: { fontSize: 12, color: "#888", marginTop: 2 },
   weekTotal: { fontSize: 22, fontWeight: "800", color: "#6750a4" },
+
+  rosterRow: { paddingHorizontal: 18, paddingVertical: 12 },
+  rosterRowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  rosterPlayerName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a", marginBottom: 2 },
+  rosterMeta: { flexDirection: "row", alignItems: "center", gap: 4 },
+  rosterTeam: { fontSize: 12, color: "#888" },
+  rosterDot: { fontSize: 12, color: "#ccc" },
+  rosterPositions: { fontSize: 12, fontWeight: "600", color: "#6750a4" },
 });

@@ -1,4 +1,4 @@
-"""
+"""  # noqa
 FastAPI application entry point.
 
 Endpoints
@@ -47,7 +47,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Fantasy Basketball Playoff Optimizer",
     description="Optimizes weekly lineups for a 13-player roster over a 3-week playoff.",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=lifespan,
 )
 
