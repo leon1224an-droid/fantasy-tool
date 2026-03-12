@@ -1,14 +1,8 @@
-import React, { useState } from "react";
+import React from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import {
-  ActivityIndicator,
-  Button,
-  Surface,
-  Text,
-  useTheme,
-} from "react-native-paper";
+import { Button, Surface, Text, useTheme } from "react-native-paper";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getOptimize, ingestAll, WeeklyLineupResponse } from "../../lib/api";
+import { getCalendar, getRoster, getSavedRosters, ingestAll } from "../../lib/api";
 
 const WEEK_DATES: Record<number, string> = {
   21: "Mar 16 – Mar 22",
@@ -19,41 +13,68 @@ const WEEK_DATES: Record<number, string> = {
 export default function DashboardScreen() {
   const theme = useTheme();
   const queryClient = useQueryClient();
-  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
 
-  const { data: lineups, isLoading, error } = useQuery({
-    queryKey: ["optimize"],
-    queryFn: () => getOptimize(),
+  const { data: calendar, isLoading, error } = useQuery({
+    queryKey: ["calendar"],
+    queryFn: getCalendar,
+  });
+
+  const { data: roster } = useQuery({
+    queryKey: ["roster"],
+    queryFn: getRoster,
+  });
+
+  const { data: savedRosters } = useQuery({
+    queryKey: ["saved-rosters"],
+    queryFn: getSavedRosters,
   });
 
   const ingestMutation = useMutation({
     mutationFn: ingestAll,
     onSuccess: () => {
-      setLastRefresh(new Date());
-      queryClient.invalidateQueries({ queryKey: ["optimize"] });
-      queryClient.invalidateQueries({ queryKey: ["schedule"] });
-      queryClient.invalidateQueries({ queryKey: ["projections"] });
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["schedule-all"] });
+      queryClient.invalidateQueries({ queryKey: ["team-days"] });
       queryClient.invalidateQueries({ queryKey: ["player-grid"] });
+      queryClient.invalidateQueries({ queryKey: ["roster"] });
     },
+  });
+
+  // Detect which saved roster is active (if any) by matching player names
+  const activeRosterName = React.useMemo(() => {
+    if (!roster || !savedRosters) return null;
+    const activeNames = new Set(roster.map((p) => p.name));
+    for (const saved of savedRosters) {
+      const savedNames = new Set(saved.players.map((p) => p.name));
+      if (
+        savedNames.size === activeNames.size &&
+        [...savedNames].every((n) => activeNames.has(n))
+      ) {
+        return saved.name;
+      }
+    }
+    return null;
+  }, [roster, savedRosters]);
+
+  // Sum players_available per week from calendar (matches "Total Games" in calendar view)
+  const weekTotals = ([21, 22, 23] as const).map((wk) => {
+    const weekData = calendar?.find((w) => w.week_num === wk);
+    const total = weekData?.days.reduce((s, d) => s + d.players_available, 0) ?? 0;
+    return { week: wk, total };
   });
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={[styles.heading, { color: theme.colors.onBackground }]}>
-            Playoff Optimizer
-          </Text>
-          {lastRefresh && (
-            <Text style={styles.lastRefresh}>
-              Updated {lastRefresh.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </Text>
-          )}
-        </View>
+        <Text style={[styles.heading, { color: theme.colors.onBackground }]}>Dashboard</Text>
 
-        {/* Refresh button */}
+        {activeRosterName && (
+          <View style={styles.rosterBadge}>
+            <Text style={styles.rosterBadgeLabel}>Active roster</Text>
+            <Text style={styles.rosterBadgeName}>{activeRosterName}</Text>
+          </View>
+        )}
+
         <Button
           mode="contained"
           onPress={() => ingestMutation.mutate()}
@@ -67,102 +88,67 @@ export default function DashboardScreen() {
         </Button>
 
         {ingestMutation.isError && (
-          <Text style={styles.errorText}>
-            Ingest failed: {ingestMutation.error?.message}
-          </Text>
+          <Text style={styles.errorText}>Ingest failed: {ingestMutation.error?.message}</Text>
+        )}
+        {ingestMutation.isSuccess && (
+          <Text style={styles.successText}>Data refreshed successfully.</Text>
         )}
 
-        {/* Loading */}
-        {isLoading && <ActivityIndicator size="large" style={styles.spinner} />}
+        {isLoading && <Text style={styles.hintText}>Loading…</Text>}
+        {error && <Text style={styles.errorText}>{(error as Error).message}</Text>}
 
-        {/* No data hint */}
-        {error && (
-          <Text style={styles.hintText}>
-            {(error as Error).message.includes("No projection")
-              ? 'No data yet — tap "Refresh Data" to ingest.'
-              : (error as Error).message}
-          </Text>
+        {!isLoading && !error && (!calendar || calendar.length === 0) && (
+          <Text style={styles.hintText}>No data — tap "Refresh Data" to ingest.</Text>
         )}
 
-        {/* Week cards */}
-        {lineups?.map((lineup) => (
-          <WeekCard key={lineup.week_num} lineup={lineup} />
-        ))}
+        {!isLoading && !error && calendar && calendar.length > 0 && (
+          <Surface style={styles.card} elevation={1}>
+            <Text style={styles.cardTitle}>Games This Playoff</Text>
+            <View style={styles.cardDivider} />
+            {weekTotals.map(({ week, total }) => (
+              <View key={week} style={styles.weekRow}>
+                <View>
+                  <Text style={styles.weekLabel}>Week {week}</Text>
+                  <Text style={styles.weekDates}>{WEEK_DATES[week]}</Text>
+                </View>
+                <Text style={styles.weekTotal}>{total} games</Text>
+              </View>
+            ))}
+          </Surface>
+        )}
       </ScrollView>
     </View>
-  );
-}
-
-function WeekCard({ lineup }: { lineup: WeeklyLineupResponse }) {
-  const top3 = lineup.starters.slice(0, 3);
-
-  return (
-    <Surface style={styles.card} elevation={1}>
-      <View style={styles.cardHeader}>
-        <View>
-          <Text style={styles.cardWeek}>Week {lineup.week_num}</Text>
-          <Text style={styles.cardDates}>{WEEK_DATES[lineup.week_num] ?? ""}</Text>
-        </View>
-        <View style={styles.ptsBadge}>
-          <Text style={styles.ptsValue}>{lineup.total_projected.toFixed(1)}</Text>
-          <Text style={styles.ptsLabel}>pts</Text>
-        </View>
-      </View>
-
-      <View style={styles.cardDivider} />
-
-      <View style={styles.startersSection}>
-        <Text style={styles.startersTitle}>Top starters</Text>
-        {top3.map((s) => (
-          <View key={s.slot} style={styles.starterRow}>
-            <Text style={styles.starterSlot}>{s.slot}</Text>
-            <Text style={styles.starterName} numberOfLines={1}>{s.player}</Text>
-            <Text style={styles.starterPts}>{s.projected_total.toFixed(1)}</Text>
-          </View>
-        ))}
-      </View>
-    </Surface>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
+  heading: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5, marginBottom: 4 },
 
-  header: { flexDirection: "row", alignItems: "baseline", justifyContent: "space-between", marginBottom: 4 },
-  heading: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
-  lastRefresh: { fontSize: 11, color: "#aaa" },
+  rosterBadge: {
+    flexDirection: "row", alignItems: "center", gap: 8,
+    backgroundColor: "#ede7f6", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8,
+  },
+  rosterBadgeLabel: { fontSize: 12, color: "#7e57c2", fontWeight: "600" },
+  rosterBadgeName: { fontSize: 14, color: "#4a148c", fontWeight: "800" },
 
   refreshBtn: { borderRadius: 12 },
   refreshBtnContent: { paddingVertical: 4 },
   errorText: { color: "#c62828", textAlign: "center", fontSize: 13 },
+  successText: { color: "#2e7d32", textAlign: "center", fontSize: 13 },
   hintText: { color: "#888", textAlign: "center", fontSize: 13 },
-  spinner: { marginTop: 32 },
 
-  // Week cards
-  card: {
-    borderRadius: 16,
-    backgroundColor: "#fff",
-    overflow: "hidden",
-  },
-  cardHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 12,
-  },
-  cardWeek: { fontSize: 17, fontWeight: "700", color: "#1a1a1a" },
-  cardDates: { fontSize: 12, color: "#888", marginTop: 2 },
-  ptsBadge: { alignItems: "flex-end" },
-  ptsValue: { fontSize: 26, fontWeight: "800", color: "#6750a4", lineHeight: 30 },
-  ptsLabel: { fontSize: 10, color: "#888", textAlign: "right" },
+  card: { borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
+  cardTitle: { fontSize: 15, fontWeight: "700", color: "#1a1a1a", padding: 18, paddingBottom: 12 },
   cardDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#f0f0f0", marginHorizontal: 18 },
-  startersSection: { paddingHorizontal: 18, paddingTop: 10, paddingBottom: 14 },
-  startersTitle: { fontSize: 11, fontWeight: "600", color: "#aaa", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8 },
-  starterRow: { flexDirection: "row", alignItems: "center", paddingVertical: 3 },
-  starterSlot: { fontSize: 11, fontWeight: "700", color: "#6750a4", width: 40 },
-  starterName: { flex: 1, fontSize: 14, color: "#1a1a1a" },
-  starterPts: { fontSize: 14, fontWeight: "600", color: "#555" },
+
+  weekRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 18, paddingVertical: 14,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0",
+  },
+  weekLabel: { fontSize: 15, fontWeight: "600", color: "#1a1a1a" },
+  weekDates: { fontSize: 12, color: "#888", marginTop: 2 },
+  weekTotal: { fontSize: 22, fontWeight: "800", color: "#6750a4" },
 });

@@ -16,10 +16,19 @@ export default function TabLayout() {
       }}
     >
       {/* Hidden tabs */}
-      <Tabs.Screen name="index"       options={{ href: null }} />
       <Tabs.Screen name="lineup"      options={{ href: null }} />
       <Tabs.Screen name="schedule"    options={{ href: null }} />
       <Tabs.Screen name="projections" options={{ href: null }} />
+
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: "Dashboard",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="home" size={size} color={color} />
+          ),
+        }}
+      />
 
       <Tabs.Screen
         name="roster"
