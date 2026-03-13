@@ -17,12 +17,14 @@ import { useQuery } from "@tanstack/react-query";
 import {
   getRoster,
   getSavedRosters,
+  getLeagueTeams,
   searchPlayers,
   getPlayerInfo,
   simulateSchedule,
   NBAPlayerSearchResult,
   SavedRosterSchema,
   SimulateScheduleResponse,
+  LeagueTeamResponse,
 } from "../../lib/api";
 
 const WEEKS = [21, 22, 23] as const;
@@ -85,6 +87,11 @@ export default function CompareScreen() {
   const loadSavedToB = (roster: SavedRosterSchema) =>
     setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
 
+  const loadYahooToA = (team: LeagueTeamResponse) =>
+    setRosterA(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
+  const loadYahooToB = (team: LeagueTeamResponse) =>
+    setRosterB(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
+
   const totA = WEEKS.map((w) => weekTotalA(w));
   const totB = WEEKS.map((w) => weekTotalB(w));
 
@@ -133,6 +140,7 @@ export default function CompareScreen() {
           onRemove={removeA}
           onAdd={addToA}
           onLoadSaved={loadSavedToA}
+          onLoadYahoo={loadYahooToA}
           startsMap={startsMapA}
           isLoading={loadingA}
         />
@@ -143,6 +151,7 @@ export default function CompareScreen() {
           onRemove={removeB}
           onAdd={addToB}
           onLoadSaved={loadSavedToB}
+          onLoadYahoo={loadYahooToB}
           startsMap={startsMapB}
           isLoading={loadingB}
         />
@@ -201,7 +210,7 @@ function ComparisonRow({
 // Roster panel
 // ---------------------------------------------------------------------------
 function RosterPanel({
-  side, color, players, onRemove, onAdd, onLoadSaved, startsMap, isLoading,
+  side, color, players, onRemove, onAdd, onLoadSaved, onLoadYahoo, startsMap, isLoading,
 }: {
   side: "A" | "B";
   color: string;
@@ -209,6 +218,7 @@ function RosterPanel({
   onRemove: (name: string) => void;
   onAdd: (p: ComparePlayer) => void;
   onLoadSaved: (roster: SavedRosterSchema) => void;
+  onLoadYahoo: (team: LeagueTeamResponse) => void;
   startsMap: Record<string, Record<number, number>>;
   isLoading: boolean;
 }) {
@@ -247,12 +257,13 @@ function RosterPanel({
         />
       )}
 
-      {/* Load saved roster modal */}
-      <SavedRosterModal
+      {/* Load roster modal (saved + Yahoo) */}
+      <LoadRosterModal
         visible={showLoadModal}
         color={color}
         onClose={() => setShowLoadModal(false)}
-        onLoad={(r) => { onLoadSaved(r); setShowLoadModal(false); }}
+        onLoadSaved={(r) => { onLoadSaved(r); setShowLoadModal(false); }}
+        onLoadYahoo={(t) => { onLoadYahoo(t); setShowLoadModal(false); }}
       />
 
       {/* Empty state */}
@@ -307,20 +318,29 @@ function RosterPanel({
 }
 
 // ---------------------------------------------------------------------------
-// Saved roster picker modal
+// Load roster modal — tabs for Saved and Yahoo teams
 // ---------------------------------------------------------------------------
-function SavedRosterModal({
-  visible, color, onClose, onLoad,
+function LoadRosterModal({
+  visible, color, onClose, onLoadSaved, onLoadYahoo,
 }: {
   visible: boolean;
   color: string;
   onClose: () => void;
-  onLoad: (r: SavedRosterSchema) => void;
+  onLoadSaved: (r: SavedRosterSchema) => void;
+  onLoadYahoo: (t: LeagueTeamResponse) => void;
 }) {
-  const { data, isLoading } = useQuery({
+  const [tab, setTab] = useState<"saved" | "yahoo">("saved");
+
+  const { data: savedData, isLoading: savedLoading } = useQuery({
     queryKey: ["saved-rosters"],
     queryFn: getSavedRosters,
-    enabled: visible,
+    enabled: visible && tab === "saved",
+  });
+
+  const { data: yahooData, isLoading: yahooLoading } = useQuery({
+    queryKey: ["league-teams"],
+    queryFn: getLeagueTeams,
+    enabled: visible && tab === "yahoo",
   });
 
   if (!visible) return null;
@@ -331,37 +351,81 @@ function SavedRosterModal({
         <TouchableOpacity activeOpacity={1}>
           <Surface style={[styles.modalCard, { borderTopColor: color, borderTopWidth: 3 }]} elevation={4}>
             <View style={styles.modalHeader}>
-              <Text style={[styles.modalTitle, { color }]}>Load Saved Roster</Text>
+              <Text style={[styles.modalTitle, { color }]}>Load Roster</Text>
               <IconButton icon="close" size={20} onPress={onClose} style={{ margin: 0 }} />
             </View>
             <Divider />
 
-            {isLoading && <ActivityIndicator style={{ margin: 20 }} />}
+            {/* Tabs */}
+            <View style={styles.modalTabs}>
+              <TouchableOpacity
+                style={[styles.modalTab, tab === "saved" && { borderBottomColor: color, borderBottomWidth: 2 }]}
+                onPress={() => setTab("saved")}
+              >
+                <Text style={[styles.modalTabText, tab === "saved" && { color }]}>Saved</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalTab, tab === "yahoo" && { borderBottomColor: color, borderBottomWidth: 2 }]}
+                onPress={() => setTab("yahoo")}
+              >
+                <Text style={[styles.modalTabText, tab === "yahoo" && { color }]}>Yahoo Teams</Text>
+              </TouchableOpacity>
+            </View>
+            <Divider />
 
-            {!isLoading && (!data || data.length === 0) && (
-              <Text style={styles.modalEmpty}>
-                No saved rosters yet. Create one in the Roster tab.
-              </Text>
+            {tab === "saved" && (
+              <>
+                {savedLoading && <ActivityIndicator style={{ margin: 20 }} />}
+                {!savedLoading && (!savedData || savedData.length === 0) && (
+                  <Text style={styles.modalEmpty}>No saved rosters yet. Create one in the Roster tab.</Text>
+                )}
+                <ScrollView style={styles.modalList}>
+                  {savedData?.map((roster) => (
+                    <TouchableOpacity
+                      key={roster.id}
+                      style={styles.modalRow}
+                      onPress={() => onLoadSaved(roster)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={styles.modalRowInfo}>
+                        <Text style={styles.modalRosterName}>{roster.name}</Text>
+                        <Text style={styles.modalRosterMeta}>
+                          {roster.players.length} players · {roster.players.map((p) => p.name.split(" ").pop()).join(", ")}
+                        </Text>
+                      </View>
+                      <IconButton icon="chevron-right" size={18} iconColor={color} style={{ margin: 0 }} />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
             )}
 
-            <ScrollView style={styles.modalList}>
-              {data?.map((roster) => (
-                <TouchableOpacity
-                  key={roster.id}
-                  style={styles.modalRow}
-                  onPress={() => onLoad(roster)}
-                  activeOpacity={0.6}
-                >
-                  <View style={styles.modalRowInfo}>
-                    <Text style={styles.modalRosterName}>{roster.name}</Text>
-                    <Text style={styles.modalRosterMeta}>
-                      {roster.players.length} players · {roster.players.map((p) => p.name.split(" ").pop()).join(", ")}
-                    </Text>
-                  </View>
-                  <IconButton icon="chevron-right" size={18} iconColor={color} style={{ margin: 0 }} />
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
+            {tab === "yahoo" && (
+              <>
+                {yahooLoading && <ActivityIndicator style={{ margin: 20 }} />}
+                {!yahooLoading && (!yahooData || yahooData.length === 0) && (
+                  <Text style={styles.modalEmpty}>No Yahoo teams found. Sync Yahoo on the Dashboard first.</Text>
+                )}
+                <ScrollView style={styles.modalList}>
+                  {yahooData?.map((team) => (
+                    <TouchableOpacity
+                      key={team.team_key}
+                      style={styles.modalRow}
+                      onPress={() => onLoadYahoo(team)}
+                      activeOpacity={0.6}
+                    >
+                      <View style={styles.modalRowInfo}>
+                        <Text style={styles.modalRosterName}>{team.team_name}</Text>
+                        <Text style={styles.modalRosterMeta}>
+                          {team.manager_name ? `${team.manager_name} · ` : ""}{team.roster.length} players
+                        </Text>
+                      </View>
+                      <IconButton icon="chevron-right" size={18} iconColor={color} style={{ margin: 0 }} />
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </>
+            )}
           </Surface>
         </TouchableOpacity>
       </TouchableOpacity>
@@ -506,9 +570,12 @@ const styles = StyleSheet.create({
 
   // Modal
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
-  modalCard: { width: 340, maxHeight: 480, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
+  modalCard: { width: 340, maxHeight: 500, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
   modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
   modalTitle: { fontSize: 16, fontWeight: "700" },
+  modalTabs: { flexDirection: "row" },
+  modalTab: { flex: 1, alignItems: "center", paddingVertical: 10 },
+  modalTabText: { fontSize: 13, fontWeight: "600", color: "#888" },
   modalEmpty: { color: "#aaa", textAlign: "center", padding: 24, fontSize: 13 },
   modalList: { maxHeight: 360 },
   modalRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },

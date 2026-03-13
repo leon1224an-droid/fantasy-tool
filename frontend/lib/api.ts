@@ -399,6 +399,14 @@ export interface MatchupResult {
   ties: number;
 }
 
+export function loadYahooTeamToRoster(teamKey: string): Promise<RosterPlayer[]> {
+  return apiFetch<RosterPlayer[]>("/roster/load-yahoo-team", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ team_key: teamKey }),
+  });
+}
+
 export function getLeagueTeams(): Promise<LeagueTeamResponse[]> {
   return apiFetch<LeagueTeamResponse[]>("/league/teams");
 }

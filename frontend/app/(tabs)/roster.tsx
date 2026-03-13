@@ -26,11 +26,14 @@ import {
   updateSavedRoster,
   deleteSavedRoster,
   activateSavedRoster,
+  loadYahooTeamToRoster,
+  getLeagueTeams,
   RosterPlayer,
   NBAPlayerSearchResult,
   NBAPlayerInfo,
   SavedRosterSchema,
   SavedRosterEntry,
+  LeagueTeamResponse,
 } from "../../lib/api";
 import { LoadingOrError } from "../../components/LoadingOrError";
 
@@ -84,6 +87,7 @@ function ActiveRoster() {
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [showLoadPicker, setShowLoadPicker] = useState(false);
+  const [showYahooPicker, setShowYahooPicker] = useState(false);
   const [loadedRoster, setLoadedRoster] = useState<{ id: number; name: string } | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -94,6 +98,12 @@ function ActiveRoster() {
   const { data: savedRosters } = useQuery({
     queryKey: ["saved-rosters"],
     queryFn: getSavedRosters,
+  });
+
+  const { data: yahooTeams } = useQuery({
+    queryKey: ["league-teams"],
+    queryFn: getLeagueTeams,
+    enabled: showYahooPicker,
   });
 
   const invalidateAll = () => {
@@ -115,6 +125,15 @@ function ActiveRoster() {
   const activateMutation = useMutation({
     mutationFn: (r: { id: number; name: string }) => activateSavedRoster(r.id),
     onSuccess: (_data, r) => { invalidateAll(); setShowLoadPicker(false); setLoadedRoster(r); },
+  });
+
+  const loadYahooMutation = useMutation({
+    mutationFn: (team: LeagueTeamResponse) => loadYahooTeamToRoster(team.team_key),
+    onSuccess: (_data, team) => {
+      invalidateAll();
+      setShowYahooPicker(false);
+      setLoadedRoster(null); // Yahoo team isn't a saved roster
+    },
   });
 
   const saveRosterMutation = useMutation({
@@ -201,12 +220,20 @@ function ActiveRoster() {
           <Text style={[styles.countBadge, { color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
             {count}/13
           </Text>
+          {/* Load from Yahoo league */}
+          <IconButton
+            icon="account-group-outline"
+            size={20}
+            iconColor="#6a0dad"
+            onPress={() => { setShowYahooPicker((v) => !v); setShowLoadPicker(false); setSaving(false); }}
+            style={styles.actionBtn}
+          />
           {/* Load saved roster */}
           <IconButton
             icon="folder-open-outline"
             size={20}
             iconColor={theme.colors.primary}
-            onPress={() => { setShowLoadPicker((v) => !v); setSaving(false); }}
+            onPress={() => { setShowLoadPicker((v) => !v); setShowYahooPicker(false); setSaving(false); }}
             style={styles.actionBtn}
           />
           {/* Save as new */}
@@ -262,6 +289,37 @@ function ActiveRoster() {
                 {activateMutation.isPending && activateMutation.variables?.id === r.id
                   ? <ActivityIndicator size={16} />
                   : <IconButton icon="swap-horizontal" size={18} iconColor="#1565c0" style={styles.actionBtn} />
+                }
+              </TouchableOpacity>
+            ))
+          )}
+        </View>
+      )}
+
+      {/* Yahoo team picker */}
+      {showYahooPicker && (
+        <View style={styles.loadPickerPanel}>
+          {!yahooTeams ? (
+            <ActivityIndicator style={{ margin: 16 }} />
+          ) : yahooTeams.length === 0 ? (
+            <Text style={styles.emptyText}>No Yahoo teams found. Sync Yahoo on the Dashboard first.</Text>
+          ) : (
+            yahooTeams.map((team) => (
+              <TouchableOpacity
+                key={team.team_key}
+                style={styles.loadPickerRow}
+                onPress={() => loadYahooMutation.mutate(team)}
+                activeOpacity={0.6}
+              >
+                <View style={styles.loadPickerInfo}>
+                  <Text style={styles.loadPickerName}>{team.team_name}</Text>
+                  <Text style={styles.loadPickerMeta}>
+                    {team.manager_name ? `${team.manager_name} · ` : ""}{team.roster.length} players
+                  </Text>
+                </View>
+                {loadYahooMutation.isPending && loadYahooMutation.variables?.team_key === team.team_key
+                  ? <ActivityIndicator size={16} />
+                  : <IconButton icon="swap-horizontal" size={18} iconColor="#6a0dad" style={styles.actionBtn} />
                 }
               </TouchableOpacity>
             ))
