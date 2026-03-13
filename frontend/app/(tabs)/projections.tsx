@@ -1,11 +1,25 @@
 import React, { useState, useMemo } from "react";
 import { FlatList, StyleSheet, View } from "react-native";
-import { Text, useTheme } from "react-native-paper";
+import { Chip, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
-import { getProjections } from "../../lib/api";
+import { getProjections, getActiveSource } from "../../lib/api";
 import { WeekSelector } from "../../components/WeekSelector";
 import { ProjectionCard } from "../../components/ProjectionCard";
 import { LoadingOrError } from "../../components/LoadingOrError";
+
+const SOURCE_LABELS: Record<string, string> = {
+  nba_api: "NBA API",
+  yahoo: "Yahoo",
+  bball_monster: "Basketball Monster",
+  blended: "Blended",
+};
+
+const SOURCE_COLORS: Record<string, string> = {
+  nba_api: "#1565c0",
+  yahoo: "#6a0dad",
+  bball_monster: "#2e7d32",
+  blended: "#e65100",
+};
 
 export default function ProjectionsScreen() {
   const theme = useTheme();
@@ -16,6 +30,11 @@ export default function ProjectionsScreen() {
     queryFn: () => getProjections(week),
   });
 
+  const { data: sourceData } = useQuery({
+    queryKey: ["projection-source"],
+    queryFn: getActiveSource,
+  });
+
   const sorted = useMemo(
     () =>
       data
@@ -24,9 +43,26 @@ export default function ProjectionsScreen() {
     [data]
   );
 
+  const activeSource = sourceData?.active_source ?? "nba_api";
+  const sourceColor = SOURCE_COLORS[activeSource] ?? "#666";
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       <WeekSelector value={week} onChange={setWeek} />
+
+      {/* Active source badge */}
+      {sourceData && (
+        <View style={styles.badgeRow}>
+          <Chip
+            compact
+            style={[styles.sourceBadge, { backgroundColor: sourceColor + "18" }]}
+            textStyle={[styles.sourceBadgeText, { color: sourceColor }]}
+            icon="database"
+          >
+            {SOURCE_LABELS[activeSource] ?? activeSource}
+          </Chip>
+        </View>
+      )}
 
       {(isLoading || error) && (
         <LoadingOrError
@@ -62,5 +98,17 @@ const styles = StyleSheet.create({
     textAlign: "center",
     margin: 32,
     fontSize: 14,
+  },
+  badgeRow: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+  },
+  sourceBadge: {
+    alignSelf: "flex-start",
+    borderRadius: 20,
+  },
+  sourceBadgeText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
 });

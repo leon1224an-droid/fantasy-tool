@@ -293,3 +293,133 @@ export function updateRosterPositions(
     }
   );
 }
+
+// ---------------------------------------------------------------------------
+// Projection source
+// ---------------------------------------------------------------------------
+export interface ProjectionSourceResponse {
+  active_source: string;
+  valid_sources: string[];
+}
+
+export function getActiveSource(): Promise<ProjectionSourceResponse> {
+  return apiFetch<ProjectionSourceResponse>("/projections/source");
+}
+
+export function setActiveSource(source: string): Promise<ProjectionSourceResponse> {
+  return apiFetch<ProjectionSourceResponse>("/projections/source", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ source }),
+  });
+}
+
+export interface BlendResponse {
+  status: string;
+  players_blended: number;
+}
+
+export function blendProjections(weights: Record<string, number>): Promise<BlendResponse> {
+  return apiFetch<BlendResponse>("/projections/blend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ weights }),
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Extended ingestion
+// ---------------------------------------------------------------------------
+export function ingestYahooLeague(): Promise<{ status: string; teams_upserted: number; players_upserted: number }> {
+  return apiFetch("/ingest/yahoo-league", { method: "POST" });
+}
+
+export async function ingestBballMonster(file: File): Promise<{ status: string; upserted: number; skipped: number }> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await fetch(`${BASE_URL}/ingest/bball-monster`, {
+    method: "POST",
+    body: formData,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`API error ${res.status}: ${text}`);
+  }
+  return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// League
+// ---------------------------------------------------------------------------
+export interface RosterEntry {
+  name: string;
+  team: string;
+  positions: string[];
+}
+
+export interface LeagueTeamResponse {
+  team_key: string;
+  team_name: string;
+  manager_name: string | null;
+  roster: RosterEntry[];
+  fetched_at: string;
+}
+
+export interface TeamRankingResponse {
+  rank: number;
+  team_key: string;
+  team_name: string;
+  proj_wins: number;
+  pts: number;
+  reb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+  tov: number;
+  tpm: number;
+  fg_pct: number;
+  ft_pct: number;
+}
+
+export interface CategoryResult {
+  category: string;
+  a_value: number;
+  b_value: number;
+  winner: string;
+  margin: number;
+}
+
+export interface MatchupResult {
+  team_a: string;
+  team_b: string;
+  week_num: number;
+  categories: CategoryResult[];
+  a_wins: number;
+  b_wins: number;
+  ties: number;
+}
+
+export function getLeagueTeams(): Promise<LeagueTeamResponse[]> {
+  return apiFetch<LeagueTeamResponse[]>("/league/teams");
+}
+
+export function getLeagueRankings(week: number): Promise<TeamRankingResponse[]> {
+  return apiFetch<TeamRankingResponse[]>(`/league/rankings?week=${week}`);
+}
+
+export function getLeagueMatchup(teamA: string, teamB: string, week: number): Promise<MatchupResult> {
+  return apiFetch<MatchupResult>(
+    `/league/matchup?team_a=${encodeURIComponent(teamA)}&team_b=${encodeURIComponent(teamB)}&week=${week}`
+  );
+}
+
+export interface ScheduledMatchup {
+  team_a_key: string;
+  team_a_name: string;
+  team_b_key: string;
+  team_b_name: string;
+}
+
+export function getLeagueMatchups(week: number): Promise<ScheduledMatchup[]> {
+  return apiFetch<ScheduledMatchup[]>(`/league/matchups?week=${week}`);
+}

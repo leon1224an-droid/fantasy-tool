@@ -92,7 +92,7 @@ def compute_fantasy_ppg(stats: dict[str, float]) -> float:
 
 
 async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[str, float]]:
-    """Returns {player_name: {pts, reb, ast, stl, blk, tov, tpm, fg_pct, ft_pct}}."""
+    """Returns {player_name: {pts, reb, ast, stl, blk, tov, tpm, fg_pct, ft_pct, fg_att_pg, ft_att_pg}}."""
     season = season or os.getenv("NBA_SEASON", "2025-26")
 
     def _fetch() -> dict[str, dict[str, float]]:
@@ -105,15 +105,17 @@ async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[st
         result: dict[str, dict[str, float]] = {}
         for _, row in df.iterrows():
             result[row["PLAYER_NAME"]] = {
-                "pts":    float(row.get("PTS")    or 0),
-                "reb":    float(row.get("REB")    or 0),
-                "ast":    float(row.get("AST")    or 0),
-                "stl":    float(row.get("STL")    or 0),
-                "blk":    float(row.get("BLK")    or 0),
-                "tov":    float(row.get("TOV")    or 0),
-                "tpm":    float(row.get("FG3M")   or 0),
-                "fg_pct": float(row.get("FG_PCT") or 0),
-                "ft_pct": float(row.get("FT_PCT") or 0),
+                "pts":       float(row.get("PTS")    or 0),
+                "reb":       float(row.get("REB")    or 0),
+                "ast":       float(row.get("AST")    or 0),
+                "stl":       float(row.get("STL")    or 0),
+                "blk":       float(row.get("BLK")    or 0),
+                "tov":       float(row.get("TOV")    or 0),
+                "tpm":       float(row.get("FG3M")   or 0),
+                "fg_pct":    float(row.get("FG_PCT") or 0),
+                "ft_pct":    float(row.get("FT_PCT") or 0),
+                "fg_att_pg": float(row.get("FGA")    or 0),
+                "ft_att_pg": float(row.get("FTA")    or 0),
             }
         return result
 
@@ -191,6 +193,7 @@ async def ingest_projections(db: AsyncSession, season: str | None = None) -> Non
                 .values(
                     player_id=player.id,
                     week_num=week_num,
+                    source="nba_api",
                     games_count=games,
                     pts_pg=stats["pts"],
                     reb_pg=stats["reb"],
@@ -201,11 +204,13 @@ async def ingest_projections(db: AsyncSession, season: str | None = None) -> Non
                     tpm_pg=stats["tpm"],
                     fg_pct=stats["fg_pct"],
                     ft_pct=stats["ft_pct"],
+                    fg_att_pg=stats["fg_att_pg"],
+                    ft_att_pg=stats["ft_att_pg"],
                     fantasy_ppg=fantasy_ppg,
                     projected_total=projected_total,
                 )
                 .on_conflict_do_update(
-                    constraint="uq_projection_player_week",
+                    constraint="uq_projection_player_week_source",
                     set_={
                         "games_count": games,
                         "pts_pg": stats["pts"],
@@ -217,6 +222,8 @@ async def ingest_projections(db: AsyncSession, season: str | None = None) -> Non
                         "tpm_pg": stats["tpm"],
                         "fg_pct": stats["fg_pct"],
                         "ft_pct": stats["ft_pct"],
+                        "fg_att_pg": stats["fg_att_pg"],
+                        "ft_att_pg": stats["ft_att_pg"],
                         "fantasy_ppg": fantasy_ppg,
                         "projected_total": projected_total,
                     },

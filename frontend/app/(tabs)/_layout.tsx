@@ -75,6 +75,24 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="league"
+        options={{
+          title: "League",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="tournament" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="matchup"
+        options={{
+          title: "H2H Matchup",
+          tabBarIcon: ({ color, size }) => (
+            <MaterialCommunityIcons name="sword-cross" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }

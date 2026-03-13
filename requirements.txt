@@ -12,3 +12,5 @@ pulp>=2.8.0
 pandas>=2.2.0
 numpy>=1.26.0
 nba_api>=1.4.0
+python-multipart>=0.0.9
+yfpy>=11.0.0

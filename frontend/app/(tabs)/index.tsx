@@ -1,8 +1,8 @@
 import React from "react";
-import { ScrollView, StyleSheet, View } from "react-native";
-import { Button, Surface, Text, useTheme, Divider } from "react-native-paper";
+import { Platform, ScrollView, StyleSheet, View } from "react-native";
+import { Button, Chip, Surface, Text, useTheme, Divider } from "react-native-paper";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { getCalendar, getRoster, getSavedRosters, ingestAll } from "../../lib/api";
+import { getCalendar, getRoster, getSavedRosters, ingestAll, getActiveSource, setActiveSource, ingestYahooLeague, ingestBballMonster } from "../../lib/api";
 
 const WEEK_DATES: Record<number, string> = {
   21: "Mar 16 – Mar 22",
@@ -39,6 +39,56 @@ export default function DashboardScreen() {
       queryClient.invalidateQueries({ queryKey: ["roster"] });
     },
   });
+
+  const { data: sourceData } = useQuery({
+    queryKey: ["projection-source"],
+    queryFn: getActiveSource,
+  });
+
+  const sourceMutation = useMutation({
+    mutationFn: (source: string) => setActiveSource(source),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projection-source"] });
+      queryClient.invalidateQueries({ queryKey: ["projections"] });
+      queryClient.invalidateQueries({ queryKey: ["optimize"] });
+      queryClient.invalidateQueries({ queryKey: ["league-rankings"] });
+    },
+  });
+
+  const SOURCE_LABELS: Record<string, string> = {
+    nba_api: "NBA API",
+    yahoo: "Yahoo",
+    bball_monster: "BM",
+    blended: "Blended",
+  };
+
+  const yahooMutation = useMutation({
+    mutationFn: ingestYahooLeague,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["league-teams"] });
+      queryClient.invalidateQueries({ queryKey: ["league-rankings"] });
+      queryClient.invalidateQueries({ queryKey: ["projection-source"] });
+    },
+  });
+
+  const bmMutation = useMutation({
+    mutationFn: (file: File) => ingestBballMonster(file),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["projections"] });
+    },
+  });
+
+  const handleBMUpload = () => {
+    if (Platform.OS !== "web") return;
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".csv";
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (file) bmMutation.mutate(file);
+    };
+    input.click();
+  };
 
   // Detect which saved roster is active (if any) by matching player names
   const activeRosterName = React.useMemo(() => {
@@ -93,6 +143,92 @@ export default function DashboardScreen() {
         {ingestMutation.isSuccess && (
           <Text style={styles.successText}>Data refreshed successfully.</Text>
         )}
+
+        {/* Projection source selector */}
+        {sourceData && (
+          <Surface style={styles.card} elevation={1}>
+            <Text style={styles.cardTitle}>Projection Source</Text>
+            <View style={styles.cardDivider} />
+            <View style={styles.sourceRow}>
+              {sourceData.valid_sources.map((src) => (
+                <Chip
+                  key={src}
+                  selected={sourceData.active_source === src}
+                  onPress={() => sourceMutation.mutate(src)}
+                  disabled={sourceMutation.isPending}
+                  compact
+                  style={styles.sourceChip}
+                >
+                  {SOURCE_LABELS[src] ?? src}
+                </Chip>
+              ))}
+            </View>
+          </Surface>
+        )}
+
+        {/* Data ingestion card */}
+        <Surface style={styles.card} elevation={1}>
+          <Text style={styles.cardTitle}>Data Sources</Text>
+          <View style={styles.cardDivider} />
+
+          {/* Yahoo */}
+          <View style={styles.dataSourceRow}>
+            <View style={styles.dataSourceInfo}>
+              <Text style={styles.dataSourceLabel}>Yahoo Fantasy</Text>
+              <Text style={styles.dataSourceDesc}>Sync league teams + projections</Text>
+            </View>
+            <Button
+              mode="outlined"
+              compact
+              loading={yahooMutation.isPending}
+              disabled={yahooMutation.isPending}
+              onPress={() => yahooMutation.mutate()}
+              icon="sync"
+            >
+              Sync
+            </Button>
+          </View>
+          {yahooMutation.isSuccess && (
+            <Text style={[styles.hintText, styles.dataSourceMsg, { color: "#2e7d32" }]}>
+              Synced {(yahooMutation.data as any)?.teams_upserted ?? "?"} teams
+            </Text>
+          )}
+          {yahooMutation.isError && (
+            <Text style={[styles.hintText, styles.dataSourceMsg, { color: "#c62828" }]}>
+              {(yahooMutation.error as Error).message}
+            </Text>
+          )}
+
+          <View style={styles.cardDivider} />
+
+          {/* Basketball Monster */}
+          <View style={styles.dataSourceRow}>
+            <View style={styles.dataSourceInfo}>
+              <Text style={styles.dataSourceLabel}>Basketball Monster</Text>
+              <Text style={styles.dataSourceDesc}>Upload CSV export</Text>
+            </View>
+            <Button
+              mode="outlined"
+              compact
+              loading={bmMutation.isPending}
+              disabled={bmMutation.isPending || Platform.OS !== "web"}
+              onPress={handleBMUpload}
+              icon="upload"
+            >
+              Upload
+            </Button>
+          </View>
+          {bmMutation.isSuccess && (
+            <Text style={[styles.hintText, styles.dataSourceMsg, { color: "#2e7d32" }]}>
+              Imported {(bmMutation.data as any)?.upserted ?? "?"} players
+            </Text>
+          )}
+          {bmMutation.isError && (
+            <Text style={[styles.hintText, styles.dataSourceMsg, { color: "#c62828" }]}>
+              {(bmMutation.error as Error).message}
+            </Text>
+          )}
+        </Surface>
 
         {isLoading && <Text style={styles.hintText}>Loading…</Text>}
         {error && <Text style={styles.errorText}>{(error as Error).message}</Text>}
@@ -176,4 +312,16 @@ const styles = StyleSheet.create({
   rosterTeam: { fontSize: 12, color: "#888" },
   rosterDot: { fontSize: 12, color: "#ccc" },
   rosterPositions: { fontSize: 12, fontWeight: "600", color: "#6750a4" },
+
+  sourceRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, padding: 16 },
+  sourceChip: {},
+
+  dataSourceRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 18, paddingVertical: 14,
+  },
+  dataSourceInfo: { flex: 1, marginRight: 12 },
+  dataSourceLabel: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
+  dataSourceDesc: { fontSize: 12, color: "#888", marginTop: 1 },
+  dataSourceMsg: { textAlign: "left", paddingHorizontal: 18, paddingBottom: 10, fontSize: 12 },
 });

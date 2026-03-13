@@ -168,11 +168,14 @@ def optimize_lineup(players: list[PlayerInput], week_num: int) -> LineupResult:
 # ---------------------------------------------------------------------------
 async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
     """
-    Load Player + PlayerProjection rows from the DB and run the optimizer for
-    each of the 3 playoff weeks.  Returns one LineupResult per week.
+    Load Player + PlayerProjection rows from the DB (filtered by active source)
+    and run the optimizer for each of the 3 playoff weeks.
+    Returns one LineupResult per week.
     """
     from ..models import Player, PlayerProjection  # local import avoids circular
+    from ..ingestion.source import get_active_source
 
+    active_source = await get_active_source(db)
     results: list[LineupResult] = []
 
     for week_num in (21, 22, 23):
@@ -180,12 +183,16 @@ async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
             await db.execute(
                 select(Player, PlayerProjection)
                 .join(PlayerProjection, Player.id == PlayerProjection.player_id)
-                .where(PlayerProjection.week_num == week_num)
+                .where(
+                    PlayerProjection.week_num == week_num,
+                    PlayerProjection.source == active_source,
+                    Player.is_active == True,
+                )
             )
         ).all()
 
         if not rows:
-            print(f"[optimizer] No projection data for week {week_num} — skipping.")
+            print(f"[optimizer] No projection data for week {week_num} (source={active_source}) — skipping.")
             continue
 
         players = [

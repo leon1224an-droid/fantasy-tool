@@ -29,9 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .database import dispose_db, get_db, init_db
 from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
 from .ingestion.schedule import PLAYOFF_WEEKS, ingest_schedule
+from .ingestion.source import get_active_source
 from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
+from .routers.ingestion import router as ingestion_ext_router
+from .routers.projections import router as projections_router
+from .routers.league import router as league_router
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +61,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(ingestion_ext_router)
+app.include_router(projections_router)
+app.include_router(league_router)
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +219,13 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
 
     # Also keep date → label map
     date_label: dict[date, str] = {gd.game_date: gd.day_label for gd in gd_rows}
-    # fantasy_ppg per player (average across weeks)
-    proj_rows = (await db.execute(select(PlayerProjection))).scalars().all()
+    # fantasy_ppg per player (average across weeks, filtered by active source)
+    active_source = await get_active_source(db)
+    proj_rows = (
+        await db.execute(
+            select(PlayerProjection).where(PlayerProjection.source == active_source)
+        )
+    ).scalars().all()
     ppg_map: dict[int, float] = defaultdict(float)
     ppg_count: dict[int, int] = defaultdict(int)
     for proj in proj_rows:
@@ -386,10 +399,12 @@ async def get_projections(
     week: int | None = Query(default=None, ge=21, le=23),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return stored projections. Optionally filter by ?week=21|22|23."""
+    """Return stored projections filtered by active source. Optionally filter by ?week=21|22|23."""
+    active_source = await get_active_source(db)
     stmt = (
         select(Player, PlayerProjection)
         .join(PlayerProjection, Player.id == PlayerProjection.player_id)
+        .where(PlayerProjection.source == active_source)
         .order_by(PlayerProjection.week_num, PlayerProjection.projected_total.desc())
     )
     if week is not None:
@@ -429,11 +444,16 @@ async def run_optimize(
     Optionally restrict to a single week with ?week=21|22|23.
     """
     if week is not None:
+        active_source = await get_active_source(db)
         rows = (
             await db.execute(
                 select(Player, PlayerProjection)
                 .join(PlayerProjection, Player.id == PlayerProjection.player_id)
-                .where(PlayerProjection.week_num == week)
+                .where(
+                    PlayerProjection.week_num == week,
+                    PlayerProjection.source == active_source,
+                    Player.is_active == True,
+                )
             )
         ).all()
 
