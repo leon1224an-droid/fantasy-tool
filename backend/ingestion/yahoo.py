@@ -103,27 +103,53 @@ def _merge_attrs(attr_list: list) -> dict:
 
 
 def _parse_positions(eligible: Any) -> list[str]:
-    """Convert Yahoo eligible_positions to fantasy position list."""
+    """Convert Yahoo eligible_positions to fantasy position list.
+
+    Yahoo returns this field in several shapes:
+      {"position": "PG"}               — single position
+      {"position": ["PG", "G", "BN"]}  — multiple positions (dict form)
+      [{"position": "PG"}, {"position": "G"}]  — list-of-dicts form
+      "PG"                             — bare string (rare)
+    """
     if not eligible:
         return ["SF", "PF"]
-    if isinstance(eligible, dict):
-        raw = eligible.get("position", [])
-    else:
-        raw = eligible
-    if isinstance(raw, str):
-        raw = [raw]
+
+    # Normalise to a flat list of raw position strings
+    raw_strs: list[str] = []
+
+    if isinstance(eligible, str):
+        raw_strs = [eligible]
+    elif isinstance(eligible, dict):
+        pos = eligible.get("position", [])
+        if isinstance(pos, str):
+            raw_strs = [pos]
+        elif isinstance(pos, list):
+            raw_strs = [str(p) for p in pos if not isinstance(p, dict)]
+            # pos can itself be a list-of-dicts in edge cases
+            for p in pos:
+                if isinstance(p, dict):
+                    v = p.get("position") or p.get("full") or ""
+                    if v:
+                        raw_strs.append(str(v))
+    elif isinstance(eligible, list):
+        for item in eligible:
+            if isinstance(item, str):
+                raw_strs.append(item)
+            elif isinstance(item, dict):
+                v = item.get("position") or item.get("full") or ""
+                if v:
+                    raw_strs.append(str(v))
 
     positions: set[str] = set()
-    for p in raw:
-        p = str(p).upper().strip()
+    for p in raw_strs:
+        p = p.upper().strip()
         if p in ("PG", "SG", "SF", "PF", "C"):
             positions.add(p)
         elif p == "G":
             positions.update(["PG", "SG"])
         elif p == "F":
             positions.update(["SF", "PF"])
-        elif p not in ("IL", "IL+", "BN", ""):
-            positions.update(map_nba_position(p.title()))
+        # skip IL, IL+, BN, UTIL, empty
 
     return sorted(positions) if positions else ["SF", "PF"]
 
@@ -194,7 +220,12 @@ async def _get_team_roster(token: str, team_key: str) -> list[dict]:
             continue
 
         team_abbr = str(attrs.get("editorial_team_abbr", "")).upper()
-        positions = _parse_positions(attrs.get("eligible_positions"))
+        raw_eligible = attrs.get("eligible_positions")
+        positions = _parse_positions(raw_eligible)
+
+        # Debug: log raw eligible_positions for first player of first team
+        if not players:
+            print(f"[yahoo] DEBUG eligible_positions sample ({full_name}): {raw_eligible!r} → {positions}")
 
         players.append({"name": full_name, "team": team_abbr, "positions": positions})
 
