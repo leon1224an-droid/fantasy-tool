@@ -30,9 +30,10 @@ from .database import dispose_db, get_db, init_db
 from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
 from .ingestion.schedule import PLAYOFF_WEEKS, ingest_schedule
 from .ingestion.source import get_active_source
-from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule
+from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, YahooLeagueTeam
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
+from .routers.auth import router as auth_router
 from .routers.ingestion import router as ingestion_ext_router
 from .routers.projections import router as projections_router
 from .routers.league import router as league_router
@@ -62,6 +63,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router)
 app.include_router(ingestion_ext_router)
 app.include_router(projections_router)
 app.include_router(league_router)
@@ -660,6 +662,37 @@ async def clear_roster(db: AsyncSession = Depends(get_db)):
     await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
     await db.commit()
     return {"status": "ok"}
+
+
+class LoadYahooTeamRequest(BaseModel):
+    team_key: str
+
+
+@app.post("/roster/load-yahoo-team", response_model=list[RosterPlayer], tags=["roster"])
+async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession = Depends(get_db)):
+    """Replace the active roster with all players from a Yahoo league team."""
+    team = (
+        await db.execute(select(YahooLeagueTeam).where(YahooLeagueTeam.team_key == body.team_key))
+    ).scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail=f"Yahoo team '{body.team_key}' not found.")
+
+    # Deactivate current roster
+    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+
+    # Activate all players in the Yahoo team's roster
+    player_names = [p["name"] for p in team.roster]
+    if player_names:
+        await db.execute(
+            update(Player).where(Player.name.in_(player_names)).values(is_active=True)
+        )
+
+    await db.commit()
+
+    active = (
+        await db.execute(select(Player).where(Player.is_active == True))
+    ).scalars().all()
+    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True) for p in active]
 
 
 class UpdatePositionsRequest(BaseModel):
