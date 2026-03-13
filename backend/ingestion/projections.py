@@ -143,23 +143,33 @@ async def seed_players(db: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 # Main ingestion pipeline
 # ---------------------------------------------------------------------------
-async def ingest_projections(db: AsyncSession, season: str | None = None) -> None:
+async def ingest_projections(
+    db: AsyncSession,
+    season: str | None = None,
+    players: list | None = None,
+) -> None:
     """
     1. If no active players exist yet, seed from hardcoded ROSTER.
     2. Fetch season averages from NBA Stats API for ALL league players.
-    3. Upsert PlayerProjection for each active roster player × 3 playoff weeks.
-    """
-    # Seed on first run
-    active_count: int = (
-        await db.execute(select(func.count(Player.id)).where(Player.is_active == True))
-    ).scalar_one()
-    if active_count == 0:
-        await seed_players(db)
+    3. Upsert PlayerProjection (source='nba_api') for each player × 3 playoff weeks.
 
-    # Load all active roster players from DB
-    active_players = (
-        await db.execute(select(Player).where(Player.is_active == True))
-    ).scalars().all()
+    If `players` is provided, use that list instead of querying active players.
+    This lets the Yahoo ingest pre-populate projections for all rostered players.
+    """
+    if players is not None:
+        active_players = players
+    else:
+        # Seed on first run
+        active_count: int = (
+            await db.execute(select(func.count(Player.id)).where(Player.is_active == True))
+        ).scalar_one()
+        if active_count == 0:
+            await seed_players(db)
+
+        # Load all active roster players from DB
+        active_players = (
+            await db.execute(select(Player).where(Player.is_active == True))
+        ).scalars().all()
 
     # Fetch NBA stats for the whole league
     nba_stats = await fetch_nba_player_stats(season)

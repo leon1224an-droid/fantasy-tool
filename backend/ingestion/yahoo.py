@@ -17,7 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Player, PlayerProjection, TeamSchedule, YahooLeagueTeam
-from .projections import map_nba_position
+from .projections import map_nba_position, ingest_projections
 
 YAHOO_TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 YAHOO_API_BASE  = "https://fantasysports.yahooapis.com/fantasy/v2"
@@ -221,6 +221,7 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 
     teams_upserted   = 0
     players_upserted = 0
+    all_player_names: list[str] = []
 
     for team_info in teams:
         roster = await _get_team_roster(access_token, team_info["team_key"])
@@ -243,6 +244,7 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
             await db.flush()
 
             players_upserted += 1
+            all_player_names.append(pname)
             roster_list.append({"name": pname, "team": pteam, "positions": positions})
 
         team_stmt = (
@@ -269,6 +271,18 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 
     await db.commit()
     print(f"[yahoo] Upserted {teams_upserted} teams, {players_upserted} players.")
+
+    # Fetch NBA stats projections for all Yahoo-rostered players so league
+    # rankings have real stat totals (not just the 13 active roster players).
+    from sqlalchemy import select as sa_select
+    ingested_players = (
+        await db.execute(
+            sa_select(Player).where(Player.name.in_(all_player_names))
+        )
+    ).scalars().all()
+    print(f"[yahoo] Fetching NBA projections for {len(ingested_players)} rostered players…")
+    await ingest_projections(db, players=ingested_players)
+
     return {"teams_upserted": teams_upserted, "players_upserted": players_upserted}
 
 
