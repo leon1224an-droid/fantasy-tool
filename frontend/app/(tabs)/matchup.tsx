@@ -261,9 +261,11 @@ function MatchupCard({ matchup }: { matchup: MatchupResult }) {
 
       <Surface style={styles.card} elevation={1}>
         <View style={[styles.catRow, styles.catHeader]}>
-          <Text style={[styles.catVal, styles.catHeaderText]}>{nameA}</Text>
-          <Text style={[styles.catName, styles.catHeaderText]}>Category</Text>
-          <Text style={[styles.catVal, styles.catValRight, styles.catHeaderText]}>{nameB}</Text>
+          <Text style={[styles.catVal, styles.catHeaderText]} numberOfLines={1}>{nameA}</Text>
+          <View style={styles.catNameCol}>
+            <Text style={[styles.catName, styles.catHeaderText]}>Category</Text>
+          </View>
+          <Text style={[styles.catVal, styles.catValRight, styles.catHeaderText]} numberOfLines={1}>{nameB}</Text>
         </View>
         <Divider />
         {matchup.categories.map((cat, idx) => {
