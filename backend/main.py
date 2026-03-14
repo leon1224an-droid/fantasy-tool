@@ -30,12 +30,6 @@ from .database import dispose_db, get_db, init_db
 from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
 from .ingestion.schedule import PLAYOFF_WEEKS, expand_team_set, ingest_schedule, normalize_team_abbr
 from .ingestion.source import get_active_source
-from .ingestion.yahoo import (
-    _get_access_token,
-    _get_nba_game_id,
-    _get_team_roster,
-    _require_credentials,
-)
 from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, YahooLeagueTeam
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
@@ -700,23 +694,19 @@ class LoadYahooTeamRequest(BaseModel):
 
 @app.post("/roster/load-yahoo-team", response_model=list[RosterPlayer], tags=["roster"])
 async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession = Depends(get_db)):
-    """Replace the active roster with all players from a Yahoo league team.
+    """Replace the active roster with all players from a Yahoo league team."""
+    team = (
+        await db.execute(select(YahooLeagueTeam).where(YahooLeagueTeam.team_key == body.team_key))
+    ).scalar_one_or_none()
+    if not team:
+        raise HTTPException(status_code=404, detail=f"Yahoo team '{body.team_key}' not found.")
 
-    Always fetches the roster LIVE from Yahoo so is_il flags are always fresh
-    (bypasses any stale JSONB cache in yahoo_league_teams).
-    """
-    # Fetch live roster directly from Yahoo API
-    client_id, client_secret, refresh_token, _ = _require_credentials()
-    access_token = await _get_access_token(client_id, client_secret, refresh_token)
-    roster_data = await _get_team_roster(access_token, body.team_key)
-
-    if not roster_data:
-        raise HTTPException(status_code=404, detail=f"No players found for Yahoo team '{body.team_key}'.")
+    roster_data: list[dict] = team.roster or []
 
     # Deactivate current roster
     await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
 
-    # Upsert each player with fresh is_il from live Yahoo data
+    # Upsert each player — respect Yahoo's IL slot status from DB
     for p_data in roster_data:
         is_il = bool(p_data.get("is_il", False))
         stmt = (
@@ -737,7 +727,7 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
 
     await db.commit()
 
-    # Return fresh data directly from what Yahoo gave us (avoids SQLAlchemy identity-map staleness)
+    # Return directly from the JSONB dict — avoids SQLAlchemy identity-map returning stale ORM objects
     return [
         RosterPlayer(
             name=p["name"],
