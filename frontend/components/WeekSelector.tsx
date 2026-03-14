@@ -14,9 +14,9 @@ export function WeekSelector({ value, onChange }: Props) {
         value={String(value)}
         onValueChange={(v) => onChange(Number(v))}
         buttons={[
-          { value: "21", label: "Week 21" },
-          { value: "22", label: "Week 22" },
-          { value: "23", label: "Week 23" },
+          { value: "21", label: "Wk 21" },
+          { value: "22", label: "Wk 22" },
+          { value: "23", label: "Wk 23" },
         ]}
       />
     </View>

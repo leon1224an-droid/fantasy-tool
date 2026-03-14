@@ -394,7 +394,7 @@ function ActiveRoster() {
         <>
           <View style={styles.ilSectionHeader}>
             <View style={styles.ilBadge}><Text style={styles.ilBadgeText}>IL</Text></View>
-            <Text style={styles.ilSectionLabel}>Injured List ({ilCount}/3) — excluded from optimizer &amp; calendar</Text>
+            <Text style={styles.ilSectionLabel}>IL ({ilCount}/3) · excluded from optimizer &amp; calendar</Text>
           </View>
           {ilPlayers.map((player, idx) => (
             <RosterRow

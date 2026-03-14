@@ -14,6 +14,8 @@ export default function TabLayout() {
         tabBarStyle: { backgroundColor: theme.colors.surface, height: 56 },
         tabBarLabelStyle: { fontSize: 10, marginBottom: 4 },
         tabBarIconStyle: { marginTop: 2 },
+        tabBarScrollEnabled: true,
+        tabBarItemStyle: { width: 72 },
       }}
     >
       {/* Hidden tabs */}

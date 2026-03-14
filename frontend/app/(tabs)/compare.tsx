@@ -11,6 +11,7 @@ import {
   Divider,
   IconButton,
   Searchbar,
+  SegmentedButtons,
   Surface,
   Text,
   useTheme,
@@ -46,6 +47,7 @@ export default function CompareScreen() {
 
   const [rosterA, setRosterA] = useState<ComparePlayer[]>([]);
   const [rosterB, setRosterB] = useState<ComparePlayer[]>([]);
+  const [activePanel, setActivePanel] = useState<"A" | "B">("A");
 
   // IL sets: player names excluded from each side's simulation
   const [ilA, setIlA] = useState<Set<string>>(new Set());
@@ -134,6 +136,9 @@ export default function CompareScreen() {
   const totA = WEEKS.map((w) => weekTotalA(w));
   const totB = WEEKS.map((w) => weekTotalB(w));
 
+  const labelA = `Roster A${rosterA.length > 0 ? ` (${rosterA.length})` : ""}`;
+  const labelB = `Roster B${rosterB.length > 0 ? ` (${rosterB.length})` : ""}`;
+
   return (
     <ScrollView
       style={[styles.container, { backgroundColor: theme.colors.background }]}
@@ -149,10 +154,16 @@ export default function CompareScreen() {
               <Text style={styles.simLoadingText}>Simulating schedule…</Text>
             </View>
           )}
+          {/* Column headers */}
+          <View style={[styles.compRow, styles.compHeaderRow]}>
+            <Text style={[styles.compHeaderVal, { color: "#6750a4" }]}>A</Text>
+            <View style={styles.compMid} />
+            <Text style={[styles.compHeaderVal, { color: "#c2185b" }]}>B</Text>
+          </View>
           {WEEKS.map((w, i) => (
             <ComparisonRow
               key={w}
-              label={`Week ${w}`}
+              label={`Wk ${w}`}
               a={totA[i]}
               b={totB[i]}
               hasData={rosterA.length > 0 && rosterB.length > 0}
@@ -166,12 +177,24 @@ export default function CompareScreen() {
             hasData={rosterA.length > 0 && rosterB.length > 0}
             isTotal
           />
-          <Text style={styles.simNote}>Playable starts (position-constrained, max {ROSTER_CAP} active)</Text>
+          <Text style={styles.simNote}>Playable starts · position-constrained · max {ROSTER_CAP} active</Text>
         </Surface>
       )}
 
-      {/* Side-by-side panels */}
-      <View style={styles.rostersRow}>
+      {/* A / B panel switcher */}
+      <View style={styles.panelTabRow}>
+        <SegmentedButtons
+          value={activePanel}
+          onValueChange={(v) => setActivePanel(v as "A" | "B")}
+          buttons={[
+            { value: "A", label: labelA, style: activePanel === "A" ? styles.panelTabActiveA : undefined },
+            { value: "B", label: labelB, style: activePanel === "B" ? styles.panelTabActiveB : undefined },
+          ]}
+        />
+      </View>
+
+      {/* Active panel — full width */}
+      {activePanel === "A" && (
         <RosterPanel
           side="A"
           color="#6750a4"
@@ -185,6 +208,8 @@ export default function CompareScreen() {
           startsMap={startsMapA}
           isLoading={loadingA}
         />
+      )}
+      {activePanel === "B" && (
         <RosterPanel
           side="B"
           color="#c2185b"
@@ -198,7 +223,7 @@ export default function CompareScreen() {
           startsMap={startsMapB}
           isLoading={loadingB}
         />
-      </View>
+      )}
 
       {rosterA.length === 0 && rosterB.length === 0 && (
         <Text style={styles.hint}>
@@ -279,12 +304,19 @@ function RosterPanel({
     <Surface style={[styles.panel, { borderTopColor: color, borderTopWidth: 3 }]} elevation={1}>
       {/* Panel header */}
       <View style={[styles.panelHeader, { backgroundColor: color + "12" }]}>
-        <Text style={[styles.panelTitle, { color }]}>Roster {side}</Text>
+        <View style={styles.panelTitleGroup}>
+          <Text style={[styles.panelTitle, { color }]}>Roster {side}</Text>
+          {players.length > 0 && (
+            <Text style={[styles.rosterCountText, overCap && styles.rosterCountWarn]}>
+              {cappedCount} active{il.size > 0 ? ` · ${il.size} IL` : ""}{overCap ? ` (max ${ROSTER_CAP})` : ""}
+            </Text>
+          )}
+        </View>
         <View style={styles.panelHeaderActions}>
           {players.length > 0 && (
             <IconButton
               icon="clipboard-account-outline"
-              size={18}
+              size={20}
               iconColor={il.size > 0 ? "#c62828" : color}
               style={styles.panelActionBtn}
               onPress={() => { setShowIlModal(true); setShowAdd(false); setShowLoadModal(false); }}
@@ -292,7 +324,7 @@ function RosterPanel({
           )}
           <IconButton
             icon="bookmark-outline"
-            size={18}
+            size={20}
             iconColor={color}
             style={styles.panelActionBtn}
             onPress={() => { setShowLoadModal(true); setShowAdd(false); setShowIlModal(false); }}
@@ -300,21 +332,12 @@ function RosterPanel({
           <IconButton
             icon={showAdd ? "minus-circle-outline" : "plus-circle-outline"}
             iconColor={color}
-            size={18}
+            size={20}
             style={styles.panelActionBtn}
             onPress={() => { setShowAdd((v) => !v); setShowLoadModal(false); setShowIlModal(false); }}
           />
         </View>
       </View>
-
-      {/* IL/active count badge */}
-      {players.length > 0 && (
-        <View style={styles.rosterCountRow}>
-          <Text style={[styles.rosterCountText, overCap && styles.rosterCountWarn]}>
-            {cappedCount} active{il.size > 0 ? ` · ${il.size} IL` : ""}{overCap ? ` (capped at ${ROSTER_CAP})` : ""}
-          </Text>
-        </View>
-      )}
 
       {/* Search/add */}
       {showAdd && (
@@ -346,7 +369,7 @@ function RosterPanel({
 
       {/* Empty state */}
       {players.length === 0 && !showAdd && (
-        <Text style={styles.emptyPanel}>Tap + to add or bookmark to load saved</Text>
+        <Text style={styles.emptyPanel}>Tap + to add players or the bookmark icon to load a saved roster</Text>
       )}
 
       {/* Player list */}
@@ -383,7 +406,7 @@ function RosterPanel({
                 {p.team} · {weekStarts.join("-")} ({totalStarts}S)
               </Text>
             </View>
-            <IconButton icon="close" size={16} iconColor="#bbb" onPress={() => onRemove(p.name)} style={styles.removeBtn} />
+            <IconButton icon="close" size={18} iconColor="#bbb" onPress={() => onRemove(p.name)} style={styles.removeBtn} />
           </View>
         );
       })}
@@ -399,7 +422,7 @@ function RosterPanel({
             return (
               <View key={w} style={styles.panelTotalCell}>
                 <Text style={[styles.panelTotalVal, { color }]}>{isLoading ? "…" : t}</Text>
-                <Text style={styles.panelTotalLbl}>Wk{w}</Text>
+                <Text style={styles.panelTotalLbl}>Wk {w}</Text>
               </View>
             );
           })}
@@ -647,7 +670,7 @@ function PlayerPicker({
   return (
     <View style={styles.pickerPanel}>
       <Searchbar
-        placeholder="Search…"
+        placeholder="Search players…"
         value={query}
         onChangeText={setQuery}
         style={styles.pickerSearch}
@@ -665,7 +688,7 @@ function PlayerPicker({
             <Text style={styles.pickerName}>{p.name}</Text>
             <Text style={styles.pickerMeta}>{p.team} · roster</Text>
           </View>
-          <IconButton icon="plus" size={14} iconColor={color} style={styles.pickerPlusBtn} />
+          <IconButton icon="plus" size={16} iconColor={color} style={styles.pickerPlusBtn} />
         </TouchableOpacity>
       ))}
       {query.length >= 2 && externalResults.slice(0, 3).map((r) => (
@@ -676,7 +699,7 @@ function PlayerPicker({
           </View>
           {loadingId === r.player_id
             ? <ActivityIndicator size={14} style={styles.pickerPlusBtn} />
-            : <IconButton icon="plus" size={14} iconColor={color} style={styles.pickerPlusBtn} />
+            : <IconButton icon="plus" size={16} iconColor={color} style={styles.pickerPlusBtn} />
           }
         </TouchableOpacity>
       ))}
@@ -696,59 +719,65 @@ const styles = StyleSheet.create({
   comparisonBar: { borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
   simLoading: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingTop: 10 },
   simLoadingText: { fontSize: 11, color: "#888" },
-  simNote: { fontSize: 10, color: "#aaa", textAlign: "center", paddingBottom: 10 },
+  simNote: { fontSize: 10, color: "#aaa", textAlign: "center", paddingBottom: 10, paddingHorizontal: 12 },
+  compHeaderRow: { paddingBottom: 0, paddingTop: 10 },
+  compHeaderVal: { fontSize: 13, fontWeight: "800", minWidth: 52, textAlign: "center" },
   compRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 16 },
   compRowTotal: { backgroundColor: "#fafafa" },
-  compValue: { fontSize: 18, fontWeight: "800", minWidth: 52, textAlign: "center" },
-  compValueWinner: { fontSize: 26, minWidth: 58 },
+  compValue: { fontSize: 20, fontWeight: "800", minWidth: 52, textAlign: "center" },
+  compValueWinner: { fontSize: 28, minWidth: 58 },
   compMid: { flex: 1, alignItems: "center" },
   compLabel: { fontSize: 13, color: "#666" },
   compLabelTotal: { fontWeight: "700", color: "#1a1a1a" },
   diffText: { fontSize: 11, fontWeight: "700", marginTop: 1 },
   barDivider: { height: StyleSheet.hairlineWidth, backgroundColor: "#e8e8e8", marginHorizontal: 16 },
 
-  // Panels
-  rostersRow: { flexDirection: "row", gap: 10 },
-  panel: { flex: 1, borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
-  panelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 12, paddingVertical: 2 },
-  panelTitle: { fontSize: 15, fontWeight: "800" },
-  panelHeaderActions: { flexDirection: "row" },
-  panelActionBtn: { margin: 0, width: 32, height: 32 },
-  emptyPanel: { color: "#bbb", textAlign: "center", paddingHorizontal: 8, paddingVertical: 16, fontSize: 11 },
+  // Panel tab switcher
+  panelTabRow: { marginBottom: 4 },
+  panelTabActiveA: { borderBottomColor: "#6750a4", borderBottomWidth: 2 },
+  panelTabActiveB: { borderBottomColor: "#c2185b", borderBottomWidth: 2 },
 
-  rosterCountRow: { paddingHorizontal: 10, paddingBottom: 4 },
-  rosterCountText: { fontSize: 10, color: "#888" },
+  // Panel (full width)
+  panel: { borderRadius: 14, backgroundColor: "#fff", overflow: "hidden" },
+  panelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 14, paddingRight: 4, paddingVertical: 6 },
+  panelTitleGroup: { flex: 1, gap: 2 },
+  panelTitle: { fontSize: 16, fontWeight: "800" },
+  panelHeaderActions: { flexDirection: "row" },
+  panelActionBtn: { margin: 0, width: 36, height: 36 },
+  emptyPanel: { color: "#bbb", textAlign: "center", paddingHorizontal: 16, paddingVertical: 20, fontSize: 12 },
+
+  rosterCountText: { fontSize: 11, color: "#888" },
   rosterCountWarn: { color: "#e65100", fontWeight: "700" },
 
-  playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 14, paddingRight: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
   playerRowDimmed: { opacity: 0.45 },
-  playerInfo: { flex: 1, paddingVertical: 8 },
-  playerNameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
-  playerName: { fontSize: 12, fontWeight: "600", color: "#1a1a1a" },
+  playerInfo: { flex: 1, paddingVertical: 10 },
+  playerNameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  playerName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
   playerNameDimmed: { color: "#999" },
-  playerMeta: { fontSize: 10, color: "#888", marginTop: 1 },
-  removeBtn: { margin: 0, width: 28, height: 28 },
+  playerMeta: { fontSize: 12, color: "#888", marginTop: 2 },
+  removeBtn: { margin: 0, width: 32, height: 32 },
 
-  ilBadge: { backgroundColor: "#ffebee", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
-  ilBadgeText: { fontSize: 9, fontWeight: "700", color: "#c62828", letterSpacing: 0.3 },
-  capBadge: { backgroundColor: "#fff3e0", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
-  capBadgeText: { fontSize: 9, fontWeight: "700", color: "#e65100" },
+  ilBadge: { backgroundColor: "#ffebee", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
+  ilBadgeText: { fontSize: 10, fontWeight: "700", color: "#c62828", letterSpacing: 0.3 },
+  capBadge: { backgroundColor: "#fff3e0", borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
+  capBadgeText: { fontSize: 10, fontWeight: "700", color: "#e65100" },
 
-  panelTotals: { flexDirection: "row", paddingVertical: 10 },
+  panelTotals: { flexDirection: "row", paddingVertical: 12 },
   panelTotalCell: { flex: 1, alignItems: "center" },
-  panelTotalVal: { fontSize: 16, fontWeight: "800" },
-  panelTotalLbl: { fontSize: 9, color: "#888", textTransform: "uppercase", letterSpacing: 0.3 },
+  panelTotalVal: { fontSize: 18, fontWeight: "800" },
+  panelTotalLbl: { fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 2 },
 
   // Picker
-  pickerPanel: { paddingHorizontal: 10, paddingBottom: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
-  pickerSearch: { marginBottom: 4, backgroundColor: "#f5f5f5", height: 38, borderRadius: 10 },
-  pickerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 6, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f8f8f8" },
-  pickerName: { fontSize: 12, fontWeight: "600", color: "#1a1a1a" },
-  pickerMeta: { fontSize: 10, color: "#888" },
-  pickerPlusBtn: { margin: 0, width: 24, height: 24 },
+  pickerPanel: { paddingHorizontal: 14, paddingBottom: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  pickerSearch: { marginBottom: 6, backgroundColor: "#f5f5f5", height: 40, borderRadius: 10 },
+  pickerRow: { flexDirection: "row", alignItems: "center", paddingVertical: 8, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f8f8f8" },
+  pickerName: { fontSize: 13, fontWeight: "600", color: "#1a1a1a" },
+  pickerMeta: { fontSize: 11, color: "#888", marginTop: 1 },
+  pickerPlusBtn: { margin: 0, width: 28, height: 28 },
 
   // Load roster modal
-  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
+  modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 20 },
   modalCard: { width: 340, maxHeight: 500, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
   modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
   modalTitle: { fontSize: 16, fontWeight: "700" },

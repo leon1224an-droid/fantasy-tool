@@ -146,7 +146,7 @@ export default function MatchupScreen() {
               showSelectedOverlay
               style={styles.chip}
             >
-              Week {w}
+              Wk {w}
             </Chip>
           ))}
         </View>
@@ -304,10 +304,10 @@ const styles = StyleSheet.create({
   weekRow: { flexDirection: "row", gap: 8, marginBottom: 4 },
   chip: {},
 
-  pickerRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  pickerRow: { flexDirection: "row", alignItems: "flex-start", gap: 6 },
   pickerCol: { flex: 1, gap: 2 },
   pickerBtn: { borderRadius: 10 },
-  pickerBtnLabel: { fontSize: 12 },
+  pickerBtnLabel: { fontSize: 12, flexShrink: 1 },
   vsText: { fontSize: 15, fontWeight: "700", color: "#aaa", marginTop: 10 },
   editBtnLabel: { fontSize: 11, color: "#6750a4" },
 
@@ -325,7 +325,7 @@ const styles = StyleSheet.create({
   catRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12 },
   catHeader: { backgroundColor: "#f5f5f5" },
   catHeaderText: { fontWeight: "700", color: "#666", fontSize: 11 },
-  catVal: { width: 60, fontSize: 14, color: "#555", textAlign: "left" },
+  catVal: { width: 64, fontSize: 14, color: "#555", textAlign: "left" },
   catValRight: { textAlign: "right" },
   catNameCol: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
   catName: { fontSize: 13, fontWeight: "600", color: "#1a1a1a", textAlign: "center" },
