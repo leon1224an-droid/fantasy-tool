@@ -131,7 +131,7 @@ export default function DashboardScreen() {
 
   const weekTotals = ([21, 22, 23] as const).map((wk) => {
     const weekData = calendar?.find((w) => w.week_num === wk);
-    const total = weekData?.days.reduce((s, d) => s + d.players_available, 0) ?? 0;
+    const total = weekData?.days.reduce((s, d) => s + d.players_starting, 0) ?? 0;
     return { week: wk, total };
   });
 
@@ -253,7 +253,7 @@ export default function DashboardScreen() {
 
         {!isLoading && !error && calendar && calendar.length > 0 && (
           <Surface style={styles.card} elevation={1}>
-            <Text style={styles.cardTitle}>Games This Playoff</Text>
+            <Text style={styles.cardTitle}>Starts This Playoff</Text>
             <View style={styles.cardDivider} />
             {weekTotals.map(({ week, total }) => (
               <View key={week} style={styles.weekRow}>
@@ -261,7 +261,7 @@ export default function DashboardScreen() {
                   <Text style={styles.weekLabel}>Week {week}</Text>
                   <Text style={styles.weekDates}>{WEEK_DATES[week]}</Text>
                 </View>
-                <Text style={styles.weekTotal}>{total} games</Text>
+                <Text style={styles.weekTotal}>{total} starts</Text>
               </View>
             ))}
           </Surface>
