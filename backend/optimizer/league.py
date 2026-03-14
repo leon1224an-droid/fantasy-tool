@@ -141,9 +141,9 @@ async def compute_team_projections(
 
         # Warn about team abbreviation mismatches
         for name in active_names:
-            nba_team = player_record[name].team or ""
+            nba_team = normalize_team_abbr(player_record[name].team or "")
             if nba_team and nba_team not in known_teams:
-                print(f"[league] WARNING: {name} team='{nba_team}' not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
+                print(f"[league] WARNING: {name} team='{player_record[name].team}' (→'{nba_team}') not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
 
         # --- Daily optimizer: uses ALL active players for correct slot filling -
         starts_count: dict[str, int] = {name: 0 for name in active_names}
@@ -151,7 +151,7 @@ async def compute_team_projections(
             players_today: list[DailyPlayer] = []
             for name in active_names:
                 p = player_record[name]
-                if game_date in team_game_dates.get(p.team or "", set()):
+                if game_date in team_game_dates.get(normalize_team_abbr(p.team or ""), set()):
                     players_today.append(DailyPlayer(
                         name=name,
                         positions=p.positions,

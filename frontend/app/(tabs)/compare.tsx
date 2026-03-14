@@ -119,11 +119,11 @@ export default function CompareScreen() {
 
   const loadYahooToA = (team: LeagueTeamResponse) => {
     setRosterA(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
-    setIlA(new Set());
+    setIlA(new Set(team.roster.filter((p) => p.is_il).map((p) => p.name)));
   };
   const loadYahooToB = (team: LeagueTeamResponse) => {
     setRosterB(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
-    setIlB(new Set());
+    setIlB(new Set(team.roster.filter((p) => p.is_il).map((p) => p.name)));
   };
 
   const toggleIlA = useCallback((name: string) => {
