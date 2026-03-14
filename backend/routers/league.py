@@ -48,6 +48,7 @@ class TeamRankingResponse(BaseModel):
     team_key: str
     team_name: str
     proj_wins: int
+    total_games: int
     pts: float
     reb: float
     ast: float
@@ -140,6 +141,7 @@ async def get_league_rankings(
             team_key=r["team_key"],
             team_name=r["team_name"],
             proj_wins=r["proj_wins"],
+            total_games=r.get("total_games", 0),
             pts=r.get("pts", 0.0),
             reb=r.get("reb", 0.0),
             ast=r.get("ast", 0.0),

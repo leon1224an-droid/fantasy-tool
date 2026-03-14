@@ -91,39 +91,46 @@ export default function LeagueScreen() {
 
         {/* Rankings table */}
         {tab === "rankings" && rankings && rankings.length > 0 && (
-          <Surface style={styles.card} elevation={1}>
-            {/* Header */}
-            <View style={[styles.tableRow, styles.tableHeader]}>
-              <Text style={[styles.cell, styles.rankCell, styles.headerText]}>#</Text>
-              <Text style={[styles.cell, styles.nameCell, styles.headerText]}>Team</Text>
-              <Text style={[styles.cell, styles.numCell, styles.headerText]}>W</Text>
-              {CAT_COLS.map((c) => (
-                <Text key={c.key} style={[styles.cell, styles.numCell, styles.headerText]}>
-                  {c.label}
-                </Text>
-              ))}
-            </View>
-            <Divider />
-            {rankings.map((r, idx) => (
-              <View key={r.team_key}>
-                <View style={styles.tableRow}>
-                  <Text style={[styles.cell, styles.rankCell]}>{r.rank}</Text>
-                  <Text style={[styles.cell, styles.nameCell]} numberOfLines={1}>
-                    {r.team_name}
+          <>
+            <Surface style={styles.card} elevation={1}>
+              {/* Header */}
+              <View style={[styles.tableRow, styles.tableHeader]}>
+                <Text style={[styles.cell, styles.rankCell, styles.headerText]}>#</Text>
+                <Text style={[styles.cell, styles.nameCell, styles.headerText]}>Team</Text>
+                <Text style={[styles.cell, styles.gpCell, styles.headerText]}>GP</Text>
+                <Text style={[styles.cell, styles.numCell, styles.headerText]}>Cat W</Text>
+                {CAT_COLS.map((c) => (
+                  <Text key={c.key} style={[styles.cell, styles.numCell, styles.headerText]}>
+                    {c.label}
                   </Text>
-                  <Text style={[styles.cell, styles.numCell, styles.winsText]}>{r.proj_wins}</Text>
-                  {CAT_COLS.map((c) => (
-                    <Text key={c.key} style={[styles.cell, styles.numCell]}>
-                      {typeof r[c.key] === "number"
-                        ? (r[c.key] as number).toFixed(c.key === "fg_pct" || c.key === "ft_pct" ? 3 : 1)
-                        : r[c.key]}
-                    </Text>
-                  ))}
-                </View>
-                {idx < rankings.length - 1 && <Divider />}
+                ))}
               </View>
-            ))}
-          </Surface>
+              <Divider />
+              {rankings.map((r, idx) => (
+                <View key={r.team_key}>
+                  <View style={styles.tableRow}>
+                    <Text style={[styles.cell, styles.rankCell]}>{r.rank}</Text>
+                    <Text style={[styles.cell, styles.nameCell]} numberOfLines={1}>
+                      {r.team_name}
+                    </Text>
+                    <Text style={[styles.cell, styles.gpCell]}>{r.total_games}</Text>
+                    <Text style={[styles.cell, styles.numCell, styles.winsText]}>{r.proj_wins}</Text>
+                    {CAT_COLS.map((c) => (
+                      <Text key={c.key} style={[styles.cell, styles.numCell]}>
+                        {typeof r[c.key] === "number"
+                          ? (r[c.key] as number).toFixed(c.key === "fg_pct" || c.key === "ft_pct" ? 3 : 1)
+                          : r[c.key]}
+                      </Text>
+                    ))}
+                  </View>
+                  {idx < rankings.length - 1 && <Divider />}
+                </View>
+              ))}
+            </Surface>
+            <Text style={styles.tableNote}>
+              GP = total player-games on roster this week · Cat W = category wins vs every other team (round-robin, max {(rankings.length - 1) * 9})
+            </Text>
+          </>
         )}
 
         {/* Teams list */}
@@ -186,8 +193,10 @@ const styles = StyleSheet.create({
   cell: { fontSize: 12, color: "#1a1a1a" },
   rankCell: { width: 24, textAlign: "center" },
   nameCell: { flex: 1, paddingRight: 4 },
+  gpCell: { width: 32, textAlign: "right" },
   numCell: { width: 38, textAlign: "right" },
   winsText: { fontWeight: "800", color: "#6750a4" },
+  tableNote: { fontSize: 11, color: "#999", textAlign: "center", paddingHorizontal: 8 },
 
   hint: { color: "#888", textAlign: "center", fontSize: 13 },
   errorText: { color: "#c62828", textAlign: "center", fontSize: 13 },

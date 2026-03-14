@@ -379,6 +379,7 @@ export interface TeamRankingResponse {
   team_key: string;
   team_name: string;
   proj_wins: number;
+  total_games: number;
   pts: number;
   reb: number;
   ast: number;

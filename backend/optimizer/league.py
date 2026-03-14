@@ -222,6 +222,7 @@ async def compute_league_rankings(db: AsyncSession, week_num: int) -> list[dict]
             "team_key": p.team_key,
             "team_name": p.team_name,
             "proj_wins": wins[p.team_key],
+            "total_games": p.total_games,
             **{k: v for k, v in p.totals.items()},
         }
         for idx, p in enumerate(sorted_teams)
