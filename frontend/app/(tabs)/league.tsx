@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
 import { Button, Chip, Divider, List, Surface, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
-import { getLeagueRankings, getLeagueTeams, TeamRankingResponse } from "../../lib/api";
+import { getLeagueRankings, getLeagueTeams, getAllSchedule, TeamRankingResponse, ScheduleRow } from "../../lib/api";
 
 const WEEKS = [21, 22, 23] as const;
 const WEEK_LABELS: Record<number, string> = {
@@ -40,6 +40,22 @@ export default function LeagueScreen() {
     queryFn: getLeagueTeams,
     enabled: tab === "teams",
   });
+
+  const { data: scheduleData } = useQuery({
+    queryKey: ["schedule-all"],
+    queryFn: getAllSchedule,
+    enabled: tab === "teams",
+  });
+
+  // {nbaTeam: {21: n, 22: n, 23: n}}
+  const gamesMap = React.useMemo(() => {
+    const map: Record<string, Record<number, number>> = {};
+    for (const row of scheduleData ?? []) {
+      if (!map[row.team]) map[row.team] = {};
+      map[row.team][row.week_num] = row.games_count;
+    }
+    return map;
+  }, [scheduleData]);
 
   const isLoading = tab === "rankings" ? rankLoading : teamsLoading;
   const error = tab === "rankings" ? rankError : teamsError;
@@ -98,7 +114,6 @@ export default function LeagueScreen() {
                 <Text style={[styles.cell, styles.rankCell, styles.headerText]}>#</Text>
                 <Text style={[styles.cell, styles.nameCell, styles.headerText]}>Team</Text>
                 <Text style={[styles.cell, styles.gpCell, styles.headerText]}>GP</Text>
-                <Text style={[styles.cell, styles.numCell, styles.headerText]}>Cat W</Text>
                 {CAT_COLS.map((c) => (
                   <Text key={c.key} style={[styles.cell, styles.numCell, styles.headerText]}>
                     {c.label}
@@ -114,7 +129,6 @@ export default function LeagueScreen() {
                       {r.team_name}
                     </Text>
                     <Text style={[styles.cell, styles.gpCell]}>{r.total_games}</Text>
-                    <Text style={[styles.cell, styles.numCell, styles.winsText]}>{r.proj_wins}</Text>
                     {CAT_COLS.map((c) => (
                       <Text key={c.key} style={[styles.cell, styles.numCell]}>
                         {typeof r[c.key] === "number"
@@ -128,7 +142,7 @@ export default function LeagueScreen() {
               ))}
             </Surface>
             <Text style={styles.tableNote}>
-              GP = total player-games on roster this week · Cat W = category wins vs every other team (round-robin, max {(rankings.length - 1) * 9})
+              GP = total player-game starts on roster this week
             </Text>
           </>
         )}
@@ -153,15 +167,22 @@ export default function LeagueScreen() {
                   {team.roster.length === 0 ? (
                     <List.Item title="No roster data" />
                   ) : (
-                    team.roster.map((p) => (
-                      <List.Item
-                        key={p.name}
-                        title={p.name}
-                        description={`${p.team} · ${p.positions.join(" / ")}`}
-                        left={(props) => <List.Icon {...props} icon="basketball" />}
-                        titleStyle={styles.rosterPlayerName}
-                      />
-                    ))
+                    team.roster.map((p) => {
+                      const g = gamesMap[p.team] ?? {};
+                      const gameParts = ([21, 22, 23] as const)
+                        .map((w) => `W${w - 20}:${g[w] ?? 0}`)
+                        .join("  ");
+                      return (
+                        <List.Item
+                          key={p.name}
+                          title={p.name}
+                          description={`${p.team} · ${p.positions.join("/")}    ${gameParts}`}
+                          left={(props) => <List.Icon {...props} icon="basketball" />}
+                          titleStyle={styles.rosterPlayerName}
+                          descriptionStyle={styles.rosterPlayerDesc}
+                        />
+                      );
+                    })
                   )}
                 </List.Accordion>
                 {idx < teams.length - 1 && <Divider />}
@@ -201,5 +222,6 @@ const styles = StyleSheet.create({
   hint: { color: "#888", textAlign: "center", fontSize: 13 },
   errorText: { color: "#c62828", textAlign: "center", fontSize: 13 },
 
-  rosterPlayerName: { fontSize: 14 },
+  rosterPlayerName: { fontSize: 13, fontWeight: "600" },
+  rosterPlayerDesc: { fontSize: 11, color: "#888" },
 });
