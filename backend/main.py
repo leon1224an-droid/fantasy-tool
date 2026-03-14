@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from .database import dispose_db, get_db, init_db
 from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
-from .ingestion.schedule import PLAYOFF_WEEKS, ingest_schedule
+from .ingestion.schedule import PLAYOFF_WEEKS, expand_team_set, ingest_schedule, normalize_team_abbr
 from .ingestion.source import get_active_source
 from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, YahooLeagueTeam
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
@@ -200,13 +200,13 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
     # Load roster players with their fantasy_ppg (for tie-breaking in greedy) — IL excluded
     player_rows = (await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))).scalars().all()
 
-    roster_teams = {p.team for p in player_rows} or {p["team"] for p in ROSTER}
+    roster_teams = {normalize_team_abbr(p.team) for p in player_rows} or {normalize_team_abbr(p["team"]) for p in ROSTER}
 
-    # Load all game days for roster teams
+    # Load all game days for roster teams (expand to cover old/new abbreviation variants)
     gd_rows = (
         await db.execute(
             select(GameDay)
-            .where(GameDay.team.in_(roster_teams))
+            .where(GameDay.team.in_(expand_team_set(roster_teams)))
             .order_by(GameDay.week_num, GameDay.game_date)
         )
     ).scalars().all()
@@ -214,10 +214,10 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
     if not gd_rows:
         return []
 
-    # Build {week_num: {game_date: [team, ...]}}
+    # Build {week_num: {game_date: [team, ...]}} — normalize team keys
     days_map: dict[int, dict[date, list[str]]] = defaultdict(lambda: defaultdict(list))
     for gd in gd_rows:
-        days_map[gd.week_num][gd.game_date].append(gd.team)
+        days_map[gd.week_num][gd.game_date].append(normalize_team_abbr(gd.team))
 
     # Also keep date → label map
     date_label: dict[date, str] = {gd.game_date: gd.day_label for gd in gd_rows}
@@ -237,10 +237,10 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
         pid: ppg_map[pid] / ppg_count[pid] for pid in ppg_map
     }
 
-    # Build player lookup: team → list[DailyPlayer]
+    # Build player lookup: team → list[DailyPlayer] (normalize team keys)
     team_players: dict[str, list[DailyPlayer]] = defaultdict(list)
     for p in player_rows:
-        team_players[p.team].append(
+        team_players[normalize_team_abbr(p.team)].append(
             DailyPlayer(
                 name=p.name,
                 positions=p.positions,
@@ -334,18 +334,18 @@ async def get_schedule(db: AsyncSession = Depends(get_db)):
     active_players = (
         await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
     ).scalars().all()
-    roster_teams = {p.team for p in active_players} or {p["team"] for p in ROSTER}
+    roster_teams = {normalize_team_abbr(p.team) for p in active_players} or {normalize_team_abbr(p["team"]) for p in ROSTER}
     rows = (
         await db.execute(
             select(TeamSchedule)
-            .where(TeamSchedule.team.in_(roster_teams))
+            .where(TeamSchedule.team.in_(expand_team_set(roster_teams)))
             .order_by(TeamSchedule.week_num, TeamSchedule.team)
         )
     ).scalars().all()
 
     return [
         ScheduleRow(
-            team=r.team,
+            team=normalize_team_abbr(r.team),
             week_num=r.week_num,
             week_start=r.week_start.isoformat(),
             week_end=r.week_end.isoformat(),
@@ -568,8 +568,6 @@ async def search_nba_players(q: str = Query(min_length=2)):
 async def get_nba_player_info(player_id: int):
     """Fetch team and position for a specific NBA player (one NBA API call)."""
     from nba_api.stats.endpoints import commonplayerinfo
-    from .ingestion.schedule import ESPN_ABBR_MAP
-
     def _fetch():
         info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
         df = info.get_data_frames()[0]
@@ -582,10 +580,8 @@ async def get_nba_player_info(player_id: int):
 
     data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
 
-    # Normalise team abbreviation to match our schedule codes
-    reverse_map = {v: v for v in ESPN_ABBR_MAP.values()}
-    reverse_map.update({"SA": "SAS", "GS": "GSW", "NO": "NOP", "NY": "NYK", "WAS": "WSH", "NJN": "BKN", "SEA": "OKC"})
-    team = reverse_map.get(data["team"].upper(), data["team"].upper())
+    # Normalise team abbreviation to canonical form
+    team = normalize_team_abbr(data["team"])
 
     positions = map_nba_position(data["nba_position"])
 
@@ -944,24 +940,24 @@ async def simulate_schedule(body: SimulateScheduleRequest, db: AsyncSession = De
     if not body.players:
         return SimulateScheduleResponse(players=[])
 
-    sim_teams = {p.team for p in body.players}
+    sim_teams = {normalize_team_abbr(p.team) for p in body.players}
 
     gd_rows = (
         await db.execute(
             select(GameDay)
-            .where(GameDay.team.in_(sim_teams))
+            .where(GameDay.team.in_(expand_team_set(sim_teams)))
             .order_by(GameDay.week_num, GameDay.game_date)
         )
     ).scalars().all()
 
-    # {week_num: {game_date: [team, ...]}}
+    # {week_num: {game_date: [team, ...]}} — normalize team keys
     days_map: dict[int, dict[date, list[str]]] = defaultdict(lambda: defaultdict(list))
     for gd in gd_rows:
-        days_map[gd.week_num][gd.game_date].append(gd.team)
+        days_map[gd.week_num][gd.game_date].append(normalize_team_abbr(gd.team))
 
     team_players: dict[str, list[DailyPlayer]] = defaultdict(list)
     for p in body.players:
-        team_players[p.team].append(
+        team_players[normalize_team_abbr(p.team)].append(
             DailyPlayer(name=p.name, positions=p.positions or [], fantasy_ppg=0.0)
         )
 
@@ -1049,17 +1045,17 @@ async def get_player_grid(db: AsyncSession = Depends(get_db)):
         await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
     ).scalars().all()
 
-    # Build set of dates each roster team plays
-    roster_teams_for_grid = {p.team for p in player_rows} or {p["team"] for p in ROSTER}
+    # Build set of dates each roster team plays (expand + normalize for abbreviation variants)
+    roster_teams_for_grid = {normalize_team_abbr(p.team) for p in player_rows} or {normalize_team_abbr(p["team"]) for p in ROSTER}
     gd_rows = (
         await db.execute(
             select(GameDay)
-            .where(GameDay.team.in_(roster_teams_for_grid))
+            .where(GameDay.team.in_(expand_team_set(roster_teams_for_grid)))
         )
     ).scalars().all()
     team_game_dates: dict[str, set[str]] = defaultdict(set)
     for gd in gd_rows:
-        team_game_dates[gd.team].add(gd.game_date.isoformat())
+        team_game_dates[normalize_team_abbr(gd.team)].add(gd.game_date.isoformat())
 
     grid: list[PlayerGridRow] = []
     for p in sorted(player_rows, key=lambda x: x.name):
@@ -1068,7 +1064,7 @@ async def get_player_grid(db: AsyncSession = Depends(get_db)):
         playable_totals: dict[str, int] = {"21": 0, "22": 0, "23": 0}
 
         for date_str, label, week_num in all_days:
-            has_game = date_str in team_game_dates.get(p.team, set())
+            has_game = date_str in team_game_dates.get(normalize_team_abbr(p.team), set())
             is_starting = starting_map.get((p.name, date_str), False) if has_game else False
 
             days.append(PlayerDayCell(

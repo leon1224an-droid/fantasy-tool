@@ -38,13 +38,37 @@ ESPN_ABBR_MAP: dict[str, str] = {
     "NY":   "NYK",
     "PHX":  "PHX",
     "UTAH": "UTA",
+    "WSH":  "WAS",   # Washington Wizards (ESPN uses WSH, NBA standard is WAS)
+    "PHO":  "PHX",   # Phoenix alternate
+    "NJN":  "BKN",   # Old Nets abbreviation
+    "NOH":  "NOP",
+    "NOK":  "NOP",
+    "SEA":  "OKC",
 }
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
 
-def _normalise(abbr: str) -> str:
+def normalize_team_abbr(abbr: str) -> str:
+    """Normalize any known ESPN/legacy team abbreviation to the standard NBA form."""
     return ESPN_ABBR_MAP.get(abbr.upper(), abbr.upper())
+
+
+def expand_team_set(teams: set[str]) -> set[str]:
+    """
+    Return an expanded set that includes both canonical and legacy variants.
+    Use this when building SQL `team.in_(...)` clauses so queries work against
+    both old (pre-normalization) and new DB rows.
+    """
+    expanded = set(teams)
+    for variant, canonical in ESPN_ABBR_MAP.items():
+        if canonical in teams:
+            expanded.add(variant)
+    return expanded
+
+
+def _normalise(abbr: str) -> str:
+    return normalize_team_abbr(abbr)
 
 
 def _day_label(d: date) -> str:

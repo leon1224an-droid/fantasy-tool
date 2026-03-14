@@ -17,6 +17,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Player, PlayerProjection, TeamSchedule
+from .schedule import expand_team_set, normalize_team_abbr
 
 # ---------------------------------------------------------------------------
 # Initial roster seed (used only when the players table is empty)
@@ -175,14 +176,16 @@ async def ingest_projections(
     nba_stats = await fetch_nba_player_stats(season)
 
     # Build games_lookup from TeamSchedule
+    # Expand team set to cover both canonical ("WAS") and legacy ("WSH") variants
     roster_teams = {p.team for p in active_players}
     schedule_rows = (
         await db.execute(
-            select(TeamSchedule).where(TeamSchedule.team.in_(roster_teams))
+            select(TeamSchedule).where(TeamSchedule.team.in_(expand_team_set(roster_teams)))
         )
     ).scalars().all()
+    # Normalize keys so "WSH" and "WAS" both map to the same entry
     games_lookup: dict[tuple[str, int], int] = {
-        (row.team, row.week_num): row.games_count for row in schedule_rows
+        (normalize_team_abbr(row.team), row.week_num): row.games_count for row in schedule_rows
     }
 
     missing: list[str] = []
@@ -195,7 +198,7 @@ async def ingest_projections(
         fantasy_ppg = round(compute_fantasy_ppg(stats), 3)
 
         for week_num in (21, 22, 23):
-            games = games_lookup.get((player.team, week_num), 0)
+            games = games_lookup.get((normalize_team_abbr(player.team), week_num), 0)
             projected_total = round(fantasy_ppg * games, 2)
 
             stmt = (

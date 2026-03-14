@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import GameDay, Player, PlayerProjection, YahooLeagueTeam
 from .daily import DailyPlayer, optimize_daily_lineup
+from ..ingestion.schedule import expand_team_set, normalize_team_abbr
 
 CATEGORIES = ["pts", "reb", "ast", "stl", "blk", "tov", "tpm", "fg_pct", "ft_pct"]
 LOWER_IS_BETTER = {"tov"}
@@ -109,7 +110,7 @@ async def compute_team_projections(
 
     team_game_dates: dict[str, set[date_type]] = defaultdict(set)
     for gd in gd_rows:
-        team_game_dates[gd.team].add(gd.game_date)
+        team_game_dates[normalize_team_abbr(gd.team)].add(gd.game_date)
 
     all_dates: list[date_type] = sorted({gd.game_date for gd in gd_rows})
     known_teams: set[str] = set(team_game_dates.keys())
@@ -140,7 +141,7 @@ async def compute_team_projections(
 
         # Warn about team abbreviation mismatches
         for name in active_names:
-            nba_team = player_record[name].team
+            nba_team = player_record[name].team or ""
             if nba_team and nba_team not in known_teams:
                 print(f"[league] WARNING: {name} team='{nba_team}' not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
 
@@ -150,7 +151,7 @@ async def compute_team_projections(
             players_today: list[DailyPlayer] = []
             for name in active_names:
                 p = player_record[name]
-                if game_date in team_game_dates.get(p.team, set()):
+                if game_date in team_game_dates.get(p.team or "", set()):
                     players_today.append(DailyPlayer(
                         name=name,
                         positions=p.positions,

@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Player, PlayerProjection, TeamSchedule
 from .projections import compute_fantasy_ppg
+from .schedule import normalize_team_abbr
 
 # ---------------------------------------------------------------------------
 # Column name normalisation
@@ -147,9 +148,11 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
             )
 
     # Load schedule and existing players for lookups
+    # Normalize stored team abbreviations so "WSH" and "WAS" resolve to same key
     schedule_rows = (await db.execute(select(TeamSchedule))).scalars().all()
     games_lookup: dict[tuple[str, int], int] = {
-        (row.team, row.week_num): row.games_count for row in schedule_rows
+        (normalize_team_abbr(row.team), row.week_num): row.games_count
+        for row in schedule_rows
     }
 
     existing_players: dict[str, Player] = {
@@ -267,7 +270,7 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
             continue
 
         for week_num in (21, 22, 23):
-            games = games_lookup.get((team, week_num), 0)
+            games = games_lookup.get((normalize_team_abbr(team), week_num), 0)
             projected_total = round(fantasy_ppg * games, 2)
 
             proj_stmt = (
