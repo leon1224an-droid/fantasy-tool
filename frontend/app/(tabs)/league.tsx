@@ -125,7 +125,7 @@ export default function LeagueScreen() {
                 <View style={[styles.tableRow, styles.tableHeader]}>
                   <Text style={[styles.cell, { width: COL.rank }, styles.headerText]}>#</Text>
                   <Text style={[styles.cell, { width: COL.name }, styles.headerText]}>Team</Text>
-                  <Text style={[styles.cell, { width: COL.gp }, styles.headerText, { textAlign: "right" }]}>GP</Text>
+                  <Text style={[styles.cell, { width: COL.gp }, styles.headerText, { textAlign: "right" }]}>Starts</Text>
                   {CAT_COLS.map((c) => (
                     <Text key={c.key} style={[styles.cell, { width: COL.num }, styles.headerText, { textAlign: "right" }]}>
                       {c.label}
@@ -155,7 +155,7 @@ export default function LeagueScreen() {
               </Surface>
             </ScrollView>
             <Text style={styles.tableNote}>
-              GP = player-game starts this week · Scroll right for stats →
+              Starts = optimizer-constrained player starts (10 slots/day, top 13 active) · Scroll right →
             </Text>
           </>
         )}
@@ -183,7 +183,7 @@ export default function LeagueScreen() {
                     team.roster.map((p) => {
                       const g = gamesMap[p.team] ?? {};
                       const gameParts = ([21, 22, 23] as const)
-                        .map((w) => `W${w - 20}:${g[w] ?? 0}`)
+                        .map((w) => `W${w}:${g[w] ?? 0}`)
                         .join("  ");
                       return (
                         <List.Item
