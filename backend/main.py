@@ -571,8 +571,36 @@ async def search_nba_players(q: str = Query(min_length=2)):
 
 
 @app.get("/players/info/{player_id}", response_model=NBAPlayerInfo, tags=["roster"])
-async def get_nba_player_info(player_id: int):
-    """Fetch team and position for a specific NBA player (one NBA API call)."""
+async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)):
+    """Fetch team and position for a specific NBA player.
+
+    Checks the DB first (populated during Yahoo league sync) to avoid slow
+    external API calls. Falls back to the NBA Stats API only if the player
+    is not in the DB.
+    """
+    from nba_api.stats.static import players as nba_static
+
+    # Resolve name from local static data (no network call)
+    static_match = next((p for p in nba_static.get_players() if p["id"] == player_id), None)
+    if not static_match:
+        raise HTTPException(status_code=404, detail=f"Player ID {player_id} not found in NBA static data.")
+    player_name = static_match["full_name"]
+
+    # Try DB first — fast path for all Yahoo-rostered players
+    db_player = (
+        await db.execute(select(Player).where(Player.name == player_name))
+    ).scalar_one_or_none()
+
+    if db_player and db_player.team and db_player.positions:
+        return NBAPlayerInfo(
+            player_id=player_id,
+            name=db_player.name,
+            team=db_player.team,
+            nba_position="/".join(db_player.positions),
+            positions=db_player.positions,
+        )
+
+    # Fall back to external NBA Stats API (slow — only for players not in DB)
     from nba_api.stats.endpoints import commonplayerinfo
     def _fetch():
         info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
@@ -585,10 +613,7 @@ async def get_nba_player_info(player_id: int):
         }
 
     data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-
-    # Normalise team abbreviation to canonical form
     team = normalize_team_abbr(data["team"])
-
     positions = map_nba_position(data["nba_position"])
 
     return NBAPlayerInfo(
