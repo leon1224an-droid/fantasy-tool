@@ -90,6 +90,7 @@ function ActiveRoster() {
   const [showLoadPicker, setShowLoadPicker] = useState(false);
   const [showYahooPicker, setShowYahooPicker] = useState(false);
   const [loadedRoster, setLoadedRoster] = useState<{ id: number; name: string } | null>(null);
+  const [loadedYahooTeamName, setLoadedYahooTeamName] = useState<string | null>(null);
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["roster"],
@@ -125,20 +126,24 @@ function ActiveRoster() {
 
   const clearMutation = useMutation({
     mutationFn: clearRoster,
-    onSuccess: () => { invalidateAll(); setLoadedRoster(null); },
+    onSuccess: () => { invalidateAll(); setLoadedRoster(null); setLoadedYahooTeamName(null); },
   });
 
   const activateMutation = useMutation({
     mutationFn: (r: { id: number; name: string }) => activateSavedRoster(r.id),
-    onSuccess: (_data, r) => { invalidateAll(); setShowLoadPicker(false); setLoadedRoster(r); },
+    onSuccess: (_data, r) => { invalidateAll(); setShowLoadPicker(false); setLoadedRoster(r); setLoadedYahooTeamName(null); },
   });
 
   const loadYahooMutation = useMutation({
     mutationFn: (team: LeagueTeamResponse) => loadYahooTeamToRoster(team.team_key),
-    onSuccess: (_data, team) => {
-      invalidateAll();
+    onSuccess: (rosterData, team) => {
+      // Use the mutation response directly so is_il values are applied immediately
+      queryClient.setQueryData(["roster"], rosterData);
+      queryClient.invalidateQueries({ queryKey: ["player-grid"] });
+      queryClient.invalidateQueries({ queryKey: ["calendar"] });
       setShowYahooPicker(false);
-      setLoadedRoster(null); // Yahoo team isn't a saved roster
+      setLoadedRoster(null);
+      setLoadedYahooTeamName(team.team_name);
     },
   });
 
@@ -222,8 +227,10 @@ function ActiveRoster() {
       <View style={styles.cardHeader}>
         <View style={styles.rosterTitleGroup}>
           <Text style={[styles.cardTitle, { color: theme.colors.onSurface }]}>My Roster</Text>
-          {activeLoadedRoster && (
-            <Text style={styles.loadedLabel} numberOfLines={1}>· {activeLoadedRoster.name}</Text>
+          {(activeLoadedRoster || loadedYahooTeamName) && (
+            <Text style={styles.loadedLabel} numberOfLines={1}>
+              · {activeLoadedRoster ? activeLoadedRoster.name : loadedYahooTeamName}
+            </Text>
           )}
         </View>
         <View style={styles.rosterHeaderRight}>
