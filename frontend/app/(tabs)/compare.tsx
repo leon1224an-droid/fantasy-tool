@@ -6,6 +6,8 @@ import React, { useState, useMemo, useCallback } from "react";
 import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
+  Button,
+  Chip,
   Divider,
   IconButton,
   Searchbar,
@@ -28,6 +30,7 @@ import {
 } from "../../lib/api";
 
 const WEEKS = [21, 22, 23] as const;
+const ROSTER_CAP = 13;
 
 interface ComparePlayer {
   name: string;
@@ -44,21 +47,35 @@ export default function CompareScreen() {
   const [rosterA, setRosterA] = useState<ComparePlayer[]>([]);
   const [rosterB, setRosterB] = useState<ComparePlayer[]>([]);
 
-  // Stable keys so the query only re-runs when roster actually changes
-  const keyA = rosterA.map((p) => p.name).sort().join(",");
-  const keyB = rosterB.map((p) => p.name).sort().join(",");
+  // IL sets: player names excluded from each side's simulation
+  const [ilA, setIlA] = useState<Set<string>>(new Set());
+  const [ilB, setIlB] = useState<Set<string>>(new Set());
+
+  // Active (non-IL) rosters, capped at 13
+  const activeA = useMemo(
+    () => rosterA.filter((p) => !ilA.has(p.name)).slice(0, ROSTER_CAP),
+    [rosterA, ilA]
+  );
+  const activeB = useMemo(
+    () => rosterB.filter((p) => !ilB.has(p.name)).slice(0, ROSTER_CAP),
+    [rosterB, ilB]
+  );
+
+  // Stable keys so the query only re-runs when active roster changes
+  const keyA = activeA.map((p) => p.name).sort().join(",");
+  const keyB = activeB.map((p) => p.name).sort().join(",");
 
   const { data: simA, isFetching: loadingA } = useQuery({
     queryKey: ["simulate", keyA],
-    queryFn: () => simulateSchedule(rosterA),
-    enabled: rosterA.length > 0,
+    queryFn: () => simulateSchedule(activeA),
+    enabled: activeA.length > 0,
     staleTime: 60_000,
   });
 
   const { data: simB, isFetching: loadingB } = useQuery({
     queryKey: ["simulate", keyB],
-    queryFn: () => simulateSchedule(rosterB),
-    enabled: rosterB.length > 0,
+    queryFn: () => simulateSchedule(activeB),
+    enabled: activeB.length > 0,
     staleTime: 60_000,
   });
 
@@ -67,14 +84,21 @@ export default function CompareScreen() {
   const startsMapB = useMemo(() => buildStartsMap(simB), [simB]);
 
   const weekTotalA = (w: number) =>
-    rosterA.reduce((s, p) => s + (startsMapA[p.name]?.[w] ?? 0), 0);
+    activeA.reduce((s, p) => s + (startsMapA[p.name]?.[w] ?? 0), 0);
   const weekTotalB = (w: number) =>
-    rosterB.reduce((s, p) => s + (startsMapB[p.name]?.[w] ?? 0), 0);
+    activeB.reduce((s, p) => s + (startsMapB[p.name]?.[w] ?? 0), 0);
   const grandA = WEEKS.reduce((s, w) => s + weekTotalA(w), 0);
   const grandB = WEEKS.reduce((s, w) => s + weekTotalB(w), 0);
 
-  const removeA = (name: string) => setRosterA((r) => r.filter((p) => p.name !== name));
-  const removeB = (name: string) => setRosterB((r) => r.filter((p) => p.name !== name));
+  const removeA = (name: string) => {
+    setRosterA((r) => r.filter((p) => p.name !== name));
+    setIlA((il) => { const n = new Set(il); n.delete(name); return n; });
+  };
+  const removeB = (name: string) => {
+    setRosterB((r) => r.filter((p) => p.name !== name));
+    setIlB((il) => { const n = new Set(il); n.delete(name); return n; });
+  };
+
   const addToA = (p: ComparePlayer) => {
     if (!rosterA.find((x) => x.name === p.name)) setRosterA((r) => [...r, p]);
   };
@@ -82,15 +106,30 @@ export default function CompareScreen() {
     if (!rosterB.find((x) => x.name === p.name)) setRosterB((r) => [...r, p]);
   };
 
-  const loadSavedToA = (roster: SavedRosterSchema) =>
+  const loadSavedToA = (roster: SavedRosterSchema) => {
     setRosterA(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
-  const loadSavedToB = (roster: SavedRosterSchema) =>
+    setIlA(new Set());
+  };
+  const loadSavedToB = (roster: SavedRosterSchema) => {
     setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
+    setIlB(new Set());
+  };
 
-  const loadYahooToA = (team: LeagueTeamResponse) =>
+  const loadYahooToA = (team: LeagueTeamResponse) => {
     setRosterA(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
-  const loadYahooToB = (team: LeagueTeamResponse) =>
+    setIlA(new Set());
+  };
+  const loadYahooToB = (team: LeagueTeamResponse) => {
     setRosterB(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
+    setIlB(new Set());
+  };
+
+  const toggleIlA = useCallback((name: string) => {
+    setIlA((prev) => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
+  }, []);
+  const toggleIlB = useCallback((name: string) => {
+    setIlB((prev) => { const n = new Set(prev); n.has(name) ? n.delete(name) : n.add(name); return n; });
+  }, []);
 
   const totA = WEEKS.map((w) => weekTotalA(w));
   const totB = WEEKS.map((w) => weekTotalB(w));
@@ -127,7 +166,7 @@ export default function CompareScreen() {
             hasData={rosterA.length > 0 && rosterB.length > 0}
             isTotal
           />
-          <Text style={styles.simNote}>Playable starts (position-constrained)</Text>
+          <Text style={styles.simNote}>Playable starts (position-constrained, max {ROSTER_CAP} active)</Text>
         </Surface>
       )}
 
@@ -137,6 +176,8 @@ export default function CompareScreen() {
           side="A"
           color="#6750a4"
           players={rosterA}
+          il={ilA}
+          onToggleIl={toggleIlA}
           onRemove={removeA}
           onAdd={addToA}
           onLoadSaved={loadSavedToA}
@@ -148,6 +189,8 @@ export default function CompareScreen() {
           side="B"
           color="#c2185b"
           players={rosterB}
+          il={ilB}
+          onToggleIl={toggleIlB}
           onRemove={removeB}
           onAdd={addToB}
           onLoadSaved={loadSavedToB}
@@ -210,11 +253,13 @@ function ComparisonRow({
 // Roster panel
 // ---------------------------------------------------------------------------
 function RosterPanel({
-  side, color, players, onRemove, onAdd, onLoadSaved, onLoadYahoo, startsMap, isLoading,
+  side, color, players, il, onToggleIl, onRemove, onAdd, onLoadSaved, onLoadYahoo, startsMap, isLoading,
 }: {
   side: "A" | "B";
   color: string;
   players: ComparePlayer[];
+  il: Set<string>;
+  onToggleIl: (name: string) => void;
   onRemove: (name: string) => void;
   onAdd: (p: ComparePlayer) => void;
   onLoadSaved: (roster: SavedRosterSchema) => void;
@@ -224,6 +269,11 @@ function RosterPanel({
 }) {
   const [showAdd, setShowAdd] = useState(false);
   const [showLoadModal, setShowLoadModal] = useState(false);
+  const [showIlModal, setShowIlModal] = useState(false);
+
+  const activeCount = players.filter((p) => !il.has(p.name)).length;
+  const cappedCount = Math.min(activeCount, ROSTER_CAP);
+  const overCap = activeCount > ROSTER_CAP;
 
   return (
     <Surface style={[styles.panel, { borderTopColor: color, borderTopWidth: 3 }]} elevation={1}>
@@ -231,22 +281,40 @@ function RosterPanel({
       <View style={[styles.panelHeader, { backgroundColor: color + "12" }]}>
         <Text style={[styles.panelTitle, { color }]}>Roster {side}</Text>
         <View style={styles.panelHeaderActions}>
+          {players.length > 0 && (
+            <IconButton
+              icon="clipboard-account-outline"
+              size={18}
+              iconColor={il.size > 0 ? "#c62828" : color}
+              style={styles.panelActionBtn}
+              onPress={() => { setShowIlModal(true); setShowAdd(false); setShowLoadModal(false); }}
+            />
+          )}
           <IconButton
             icon="bookmark-outline"
             size={18}
             iconColor={color}
             style={styles.panelActionBtn}
-            onPress={() => { setShowLoadModal(true); setShowAdd(false); }}
+            onPress={() => { setShowLoadModal(true); setShowAdd(false); setShowIlModal(false); }}
           />
           <IconButton
             icon={showAdd ? "minus-circle-outline" : "plus-circle-outline"}
             iconColor={color}
             size={18}
             style={styles.panelActionBtn}
-            onPress={() => { setShowAdd((v) => !v); setShowLoadModal(false); }}
+            onPress={() => { setShowAdd((v) => !v); setShowLoadModal(false); setShowIlModal(false); }}
           />
         </View>
       </View>
+
+      {/* IL/active count badge */}
+      {players.length > 0 && (
+        <View style={styles.rosterCountRow}>
+          <Text style={[styles.rosterCountText, overCap && styles.rosterCountWarn]}>
+            {cappedCount} active{il.size > 0 ? ` · ${il.size} IL` : ""}{overCap ? ` (capped at ${ROSTER_CAP})` : ""}
+          </Text>
+        </View>
+      )}
 
       {/* Search/add */}
       {showAdd && (
@@ -266,21 +334,51 @@ function RosterPanel({
         onLoadYahoo={(t) => { onLoadYahoo(t); setShowLoadModal(false); }}
       />
 
+      {/* IL editor modal */}
+      <IlModal
+        visible={showIlModal}
+        color={color}
+        players={players}
+        il={il}
+        onToggleIl={onToggleIl}
+        onClose={() => setShowIlModal(false)}
+      />
+
       {/* Empty state */}
       {players.length === 0 && !showAdd && (
         <Text style={styles.emptyPanel}>Tap + to add or bookmark to load saved</Text>
       )}
 
       {/* Player list */}
-      {players.map((p) => {
-        const weekStarts = WEEKS.map((w) => startsMap[p.name]?.[w] ?? (isLoading ? "…" : 0));
-        const totalStarts = isLoading
-          ? "…"
-          : WEEKS.reduce((s, w) => s + (startsMap[p.name]?.[w] ?? 0), 0);
+      {players.map((p, idx) => {
+        const isIl = il.has(p.name);
+        const isCappedOut = !isIl && players.filter((x) => !il.has(x.name)).indexOf(p) >= ROSTER_CAP;
+        const weekStarts = isIl || isCappedOut
+          ? WEEKS.map(() => "–")
+          : WEEKS.map((w) => startsMap[p.name]?.[w] ?? (isLoading ? "…" : 0));
+        const totalStarts = isIl || isCappedOut
+          ? "–"
+          : isLoading
+            ? "…"
+            : WEEKS.reduce((s, w) => s + (startsMap[p.name]?.[w] ?? 0), 0);
         return (
-          <View key={p.name} style={styles.playerRow}>
+          <View key={p.name} style={[styles.playerRow, (isIl || isCappedOut) && styles.playerRowDimmed]}>
             <View style={styles.playerInfo}>
-              <Text style={styles.playerName} numberOfLines={1}>{p.name}</Text>
+              <View style={styles.playerNameRow}>
+                <Text style={[styles.playerName, (isIl || isCappedOut) && styles.playerNameDimmed]} numberOfLines={1}>
+                  {p.name}
+                </Text>
+                {isIl && (
+                  <View style={styles.ilBadge}>
+                    <Text style={styles.ilBadgeText}>IL</Text>
+                  </View>
+                )}
+                {isCappedOut && !isIl && (
+                  <View style={styles.capBadge}>
+                    <Text style={styles.capBadgeText}>+{idx}</Text>
+                  </View>
+                )}
+              </View>
               <Text style={styles.playerMeta}>
                 {p.team} · {weekStarts.join("-")} ({totalStarts}S)
               </Text>
@@ -294,7 +392,10 @@ function RosterPanel({
       {players.length > 0 && (
         <View style={[styles.panelTotals, { backgroundColor: color + "10" }]}>
           {WEEKS.map((w) => {
-            const t = players.reduce((s, p) => s + (startsMap[p.name]?.[w] ?? 0), 0);
+            const t = players
+              .filter((p) => !il.has(p.name))
+              .slice(0, ROSTER_CAP)
+              .reduce((s, p) => s + (startsMap[p.name]?.[w] ?? 0), 0);
             return (
               <View key={w} style={styles.panelTotalCell}>
                 <Text style={[styles.panelTotalVal, { color }]}>{isLoading ? "…" : t}</Text>
@@ -304,16 +405,83 @@ function RosterPanel({
           })}
           <View style={styles.panelTotalCell}>
             <Text style={[styles.panelTotalVal, { color }]}>
-              {isLoading ? "…" : players.reduce(
-                (s, p) => s + WEEKS.reduce((ss, w) => ss + (startsMap[p.name]?.[w] ?? 0), 0),
-                0
-              )}
+              {isLoading ? "…" : players
+                .filter((p) => !il.has(p.name))
+                .slice(0, ROSTER_CAP)
+                .reduce((s, p) => s + WEEKS.reduce((ss, w) => ss + (startsMap[p.name]?.[w] ?? 0), 0), 0)}
             </Text>
             <Text style={styles.panelTotalLbl}>Total</Text>
           </View>
         </View>
       )}
     </Surface>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// IL editor modal
+// ---------------------------------------------------------------------------
+function IlModal({
+  visible, color, players, il, onToggleIl, onClose,
+}: {
+  visible: boolean;
+  color: string;
+  players: ComparePlayer[];
+  il: Set<string>;
+  onToggleIl: (name: string) => void;
+  onClose: () => void;
+}) {
+  const activeCount = players.filter((p) => !il.has(p.name)).length;
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.ilModalOverlay}>
+        <View style={styles.ilModalBox}>
+          <View style={styles.ilModalHeader}>
+            <Text style={styles.ilModalTitle}>Set Lineup</Text>
+            <IconButton icon="close" size={20} onPress={onClose} style={styles.ilModalClose} />
+          </View>
+          <Text style={styles.ilModalSub}>
+            Toggle players to IL to exclude them. Top {ROSTER_CAP} active players are used.
+          </Text>
+          <Divider style={styles.ilModalDivider} />
+          <ScrollView style={styles.ilModalScroll}>
+            {players.map((player) => {
+              const isIl = il.has(player.name);
+              return (
+                <View key={player.name} style={styles.ilPlayerRow}>
+                  <View style={styles.ilPlayerInfo}>
+                    <Text style={styles.ilPlayerName}>{player.name}</Text>
+                    <Text style={styles.ilPlayerMeta}>{player.team} · {player.positions.join("/")}</Text>
+                  </View>
+                  <Chip
+                    selected={isIl}
+                    onPress={() => onToggleIl(player.name)}
+                    compact
+                    showSelectedOverlay
+                    selectedColor="#c62828"
+                    style={[styles.ilChip, isIl && styles.ilChipActive]}
+                    textStyle={[styles.ilChipText, isIl && styles.ilChipTextActive]}
+                  >
+                    IL
+                  </Chip>
+                </View>
+              );
+            })}
+          </ScrollView>
+          <View style={styles.ilModalFooter}>
+            <Text style={styles.ilModalCount}>
+              {Math.min(activeCount, ROSTER_CAP)} active
+              {activeCount > ROSTER_CAP ? ` (capped at ${ROSTER_CAP})` : ""}
+              {il.size > 0 ? ` · ${il.size} IL` : ""}
+            </Text>
+            <Button mode="contained" onPress={onClose} style={[styles.ilModalDone, { backgroundColor: color }]}>
+              Done
+            </Button>
+          </View>
+        </View>
+      </View>
+    </Modal>
   );
 }
 
@@ -522,7 +690,6 @@ function PlayerPicker({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { padding: 16, paddingBottom: 40, gap: 12 },
-  center: { flex: 1, justifyContent: "center", alignItems: "center", gap: 12 },
   hint: { color: "#aaa", textAlign: "center", fontSize: 13, marginTop: 8 },
 
   // Comparison bar
@@ -549,11 +716,23 @@ const styles = StyleSheet.create({
   panelActionBtn: { margin: 0, width: 32, height: 32 },
   emptyPanel: { color: "#bbb", textAlign: "center", paddingHorizontal: 8, paddingVertical: 16, fontSize: 11 },
 
+  rosterCountRow: { paddingHorizontal: 10, paddingBottom: 4 },
+  rosterCountText: { fontSize: 10, color: "#888" },
+  rosterCountWarn: { color: "#e65100", fontWeight: "700" },
+
   playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 10, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
+  playerRowDimmed: { opacity: 0.45 },
   playerInfo: { flex: 1, paddingVertical: 8 },
+  playerNameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   playerName: { fontSize: 12, fontWeight: "600", color: "#1a1a1a" },
+  playerNameDimmed: { color: "#999" },
   playerMeta: { fontSize: 10, color: "#888", marginTop: 1 },
   removeBtn: { margin: 0, width: 28, height: 28 },
+
+  ilBadge: { backgroundColor: "#ffebee", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
+  ilBadgeText: { fontSize: 9, fontWeight: "700", color: "#c62828", letterSpacing: 0.3 },
+  capBadge: { backgroundColor: "#fff3e0", borderRadius: 4, paddingHorizontal: 4, paddingVertical: 1 },
+  capBadgeText: { fontSize: 9, fontWeight: "700", color: "#e65100" },
 
   panelTotals: { flexDirection: "row", paddingVertical: 10 },
   panelTotalCell: { flex: 1, alignItems: "center" },
@@ -568,7 +747,7 @@ const styles = StyleSheet.create({
   pickerMeta: { fontSize: 10, color: "#888" },
   pickerPlusBtn: { margin: 0, width: 24, height: 24 },
 
-  // Modal
+  // Load roster modal
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
   modalCard: { width: 340, maxHeight: 500, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
   modalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8 },
@@ -582,4 +761,32 @@ const styles = StyleSheet.create({
   modalRowInfo: { flex: 1 },
   modalRosterName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
   modalRosterMeta: { fontSize: 11, color: "#888", marginTop: 2 },
+
+  // IL modal
+  ilModalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+  ilModalBox: {
+    backgroundColor: "#fff", borderTopLeftRadius: 20, borderTopRightRadius: 20,
+    paddingTop: 4, paddingBottom: 32, maxHeight: "80%",
+  },
+  ilModalHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 20, paddingRight: 8, paddingTop: 12 },
+  ilModalTitle: { fontSize: 15, fontWeight: "700", color: "#1a1a1a", flex: 1 },
+  ilModalClose: { margin: 0 },
+  ilModalSub: { fontSize: 12, color: "#888", paddingHorizontal: 20, marginBottom: 8 },
+  ilModalDivider: { marginBottom: 4 },
+  ilModalScroll: { flexGrow: 0 },
+  ilPlayerRow: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 20, paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0",
+  },
+  ilPlayerInfo: { flex: 1, marginRight: 12 },
+  ilPlayerName: { fontSize: 13, fontWeight: "600", color: "#1a1a1a" },
+  ilPlayerMeta: { fontSize: 11, color: "#888", marginTop: 1 },
+  ilChip: { height: 28 },
+  ilChipActive: { backgroundColor: "#ffebee" },
+  ilChipText: { fontSize: 11, color: "#888" },
+  ilChipTextActive: { color: "#c62828", fontWeight: "700" },
+  ilModalFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 14 },
+  ilModalCount: { fontSize: 13, color: "#555", fontWeight: "600" },
+  ilModalDone: { borderRadius: 10 },
 });

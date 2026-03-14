@@ -26,35 +26,36 @@ import {
   ingestBballMonster,
 } from "../../lib/api";
 
-const WEEK_DATES: Record<number, string> = {
-  21: "Mar 16–22",
-  22: "Mar 23–29",
-  23: "Mar 30–Apr 5",
-};
-
 const SOURCE_LABELS: Record<string, string> = {
   nba_api: "NBA API",
   yahoo: "Yahoo",
-  bball_monster: "Basketball Monster",
+  bball_monster: "BBall Monster",
   blended: "Blended",
 };
 
 // ---------------------------------------------------------------------------
-// Nav button used inside each feature card
+// Nav tile inside each feature card
 // ---------------------------------------------------------------------------
-function NavButton({
+function NavTile({
   icon,
   label,
+  accent,
   onPress,
 }: {
   icon: string;
   label: string;
+  accent: string;
   onPress: () => void;
 }) {
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.navBtn, pressed && styles.navBtnPressed]}>
-      <MaterialCommunityIcons name={icon as any} size={20} color="#6750a4" />
-      <Text style={styles.navBtnLabel}>{label}</Text>
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.navTile, pressed && styles.navTilePressed]}
+    >
+      <View style={[styles.navTileIcon, { backgroundColor: accent + "18" }]}>
+        <MaterialCommunityIcons name={icon as any} size={20} color={accent} />
+      </View>
+      <Text style={[styles.navTileLabel, { color: accent }]}>{label}</Text>
     </Pressable>
   );
 }
@@ -130,7 +131,6 @@ export default function HomeScreen() {
 
   const anyPending = syncMutation.isPending || bmMutation.isPending || sourceMutation.isPending;
 
-  // Active roster name
   const activeRosterName = React.useMemo(() => {
     if (!roster || !savedRosters) return null;
     const activeNames = new Set(roster.filter((p) => !p.is_il).map((p) => p.name));
@@ -142,17 +142,20 @@ export default function HomeScreen() {
     return null;
   }, [roster, savedRosters]);
 
-  // Starts per week from calendar
-  const weekStarts = ([21, 22, 23] as const).map((wk) => {
-    const weekData = calendar?.find((w) => w.week_num === wk);
-    return {
-      week: wk,
-      starts: weekData?.days.reduce((s, d) => s + d.players_starting, 0) ?? 0,
-    };
-  });
-
   const hasCalendar = !!calendar && calendar.length > 0;
   const activeRoster = roster?.filter((p) => !p.is_il) ?? [];
+
+  // Roster badge label
+  const rosterLabel = activeRosterName
+    ? `${activeRosterName} · ${activeRoster.length}p`
+    : activeRoster.length > 0
+      ? `${activeRoster.length} players`
+      : null;
+
+  // Source badge label
+  const sourceLabel = sourceData
+    ? SOURCE_LABELS[sourceData.active_source] ?? sourceData.active_source
+    : null;
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -204,7 +207,10 @@ export default function HomeScreen() {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Header */}
         <View style={styles.header}>
-          <Text style={[styles.heading, { color: theme.colors.onBackground }]}>Fantasy Playoff</Text>
+          <View>
+            <Text style={[styles.heading, { color: theme.colors.onBackground }]}>Fantasy Playoff</Text>
+            <Text style={styles.subheading}>2026 Playoff Optimizer</Text>
+          </View>
           <IconButton icon="cog-outline" size={22} iconColor={theme.colors.onSurfaceVariant}
             onPress={() => setSettingsOpen(true)} style={styles.cogBtn} />
         </View>
@@ -212,96 +218,65 @@ export default function HomeScreen() {
         {calLoading && <ActivityIndicator style={{ marginTop: 24 }} />}
 
         {!calLoading && !hasCalendar && (
-          <Surface style={styles.emptyCard} elevation={1}>
-            <MaterialCommunityIcons name="database-off-outline" size={32} color="#bbb" />
+          <Surface style={styles.emptyCard} elevation={0}>
+            <View style={styles.emptyIconWrap}>
+              <MaterialCommunityIcons name="database-off-outline" size={28} color="#bbb" />
+            </View>
             <Text style={styles.emptyText}>No data yet</Text>
-            <Text style={styles.emptyHint}>Open ⚙ and tap Sync All to load schedule &amp; league data.</Text>
+            <Text style={styles.emptyHint}>Tap ⚙ above and choose Sync All to load schedule &amp; league data.</Text>
           </Surface>
         )}
 
         {/* ── SCHEDULE OPTIMIZER ─────────────────────────────────── */}
-        <Surface style={styles.featureCard} elevation={1}>
-          {/* Card header */}
-          <View style={styles.featureHeader}>
-            <View style={[styles.featureIcon, { backgroundColor: "#ede7f6" }]}>
-              <MaterialCommunityIcons name="calendar-check" size={20} color="#6750a4" />
+        <Surface style={styles.featureCard} elevation={2}>
+          <View style={[styles.cardBand, { backgroundColor: "#6750a4" }]}>
+            <View style={styles.bandLeft}>
+              <View style={styles.bandIconWrap}>
+                <MaterialCommunityIcons name="calendar-check" size={22} color="#fff" />
+              </View>
+              <View>
+                <Text style={styles.bandTitle}>Schedule Optimizer</Text>
+                <Text style={styles.bandSub}>Maximize playoff starts</Text>
+              </View>
             </View>
-            <View style={styles.featureTitleGroup}>
-              <Text style={styles.featureTitle}>Schedule Optimizer</Text>
-              <Text style={styles.featureSub}>Maximize your playoff starts</Text>
-            </View>
-          </View>
-
-          {/* Active roster context */}
-          <View style={styles.contextRow}>
-            {activeRosterName ? (
-              <Text style={styles.contextPill}>
-                📋 {activeRosterName} · {activeRoster.length} players
-              </Text>
-            ) : roster && roster.length > 0 ? (
-              <Text style={styles.contextPill}>
-                📋 {activeRoster.length} players active
-              </Text>
-            ) : (
-              <Text style={styles.contextEmpty}>No roster — go to Roster tab to add players</Text>
+            {rosterLabel && (
+              <View style={styles.bandBadge}>
+                <Text style={styles.bandBadgeText}>{rosterLabel}</Text>
+              </View>
             )}
           </View>
 
-          {/* Week starts inline */}
-          {hasCalendar && (
-            <View style={styles.weekStatsRow}>
-              {weekStarts.map(({ week, starts }) => (
-                <View key={week} style={styles.weekStat}>
-                  <Text style={styles.weekStatNum}>{starts}</Text>
-                  <Text style={styles.weekStatLabel}>Wk {week}</Text>
-                  <Text style={styles.weekStatDate}>{WEEK_DATES[week]}</Text>
-                </View>
-              ))}
-            </View>
-          )}
-
-          <Divider style={styles.navDivider} />
-
-          {/* Nav buttons */}
-          <View style={styles.navRow}>
-            <NavButton icon="account-group" label="Roster" onPress={() => router.push("/(tabs)/roster")} />
-            <NavButton icon="calendar-today" label="Calendar" onPress={() => router.push("/(tabs)/calendar")} />
-            <NavButton icon="grid" label="Grid" onPress={() => router.push("/(tabs)/player-grid")} />
-            <NavButton icon="scale-balance" label="Compare" onPress={() => router.push("/(tabs)/compare")} />
+          <View style={styles.navGrid}>
+            <NavTile icon="account-group" label="Roster" accent="#6750a4" onPress={() => router.push("/(tabs)/roster")} />
+            <NavTile icon="calendar-today" label="Calendar" accent="#6750a4" onPress={() => router.push("/(tabs)/calendar")} />
+            <NavTile icon="grid" label="Grid" accent="#6750a4" onPress={() => router.push("/(tabs)/player-grid")} />
+            <NavTile icon="scale-balance" label="Compare" accent="#6750a4" onPress={() => router.push("/(tabs)/compare")} />
           </View>
         </Surface>
 
         {/* ── LEAGUE ANALYSIS ────────────────────────────────────── */}
-        <Surface style={styles.featureCard} elevation={1}>
-          {/* Card header */}
-          <View style={styles.featureHeader}>
-            <View style={[styles.featureIcon, { backgroundColor: "#e8f5e9" }]}>
-              <MaterialCommunityIcons name="tournament" size={20} color="#2e7d32" />
+        <Surface style={styles.featureCard} elevation={2}>
+          <View style={[styles.cardBand, { backgroundColor: "#1b5e20" }]}>
+            <View style={styles.bandLeft}>
+              <View style={styles.bandIconWrap}>
+                <MaterialCommunityIcons name="tournament" size={22} color="#fff" />
+              </View>
+              <View>
+                <Text style={styles.bandTitle}>League Analysis</Text>
+                <Text style={styles.bandSub}>Rankings &amp; H2H projections</Text>
+              </View>
             </View>
-            <View style={styles.featureTitleGroup}>
-              <Text style={styles.featureTitle}>League Analysis</Text>
-              <Text style={styles.featureSub}>Rankings &amp; H2H projections</Text>
-            </View>
-          </View>
-
-          {/* Projection source context */}
-          <View style={styles.contextRow}>
-            {sourceData ? (
-              <Text style={styles.contextPill}>
-                📊 {SOURCE_LABELS[sourceData.active_source] ?? sourceData.active_source}
-              </Text>
-            ) : (
-              <Text style={styles.contextEmpty}>No projection source — sync first</Text>
+            {sourceLabel && (
+              <View style={styles.bandBadge}>
+                <Text style={styles.bandBadgeText}>{sourceLabel}</Text>
+              </View>
             )}
           </View>
 
-          <Divider style={styles.navDivider} />
-
-          {/* Nav buttons */}
-          <View style={styles.navRow}>
-            <NavButton icon="trophy-outline" label="Rankings" onPress={() => router.push("/(tabs)/league")} />
-            <NavButton icon="sword-cross" label="H2H" onPress={() => router.push("/(tabs)/matchup")} />
-            <NavButton icon="calendar-month" label="Teams" onPress={() => router.push("/(tabs)/teams")} />
+          <View style={styles.navGrid}>
+            <NavTile icon="trophy-outline" label="Rankings" accent="#2e7d32" onPress={() => router.push("/(tabs)/league")} />
+            <NavTile icon="sword-cross" label="H2H" accent="#2e7d32" onPress={() => router.push("/(tabs)/matchup")} />
+            <NavTile icon="calendar-month" label="Teams" accent="#2e7d32" onPress={() => router.push("/(tabs)/teams")} />
           </View>
         </Surface>
       </ScrollView>
@@ -311,51 +286,59 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  content: { padding: 16, paddingBottom: 40, gap: 14 },
+  content: { padding: 16, paddingBottom: 40, gap: 16 },
 
-  header: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 2 },
-  heading: { fontSize: 20, fontWeight: "800", letterSpacing: -0.4 },
-  cogBtn: { margin: 0 },
+  // Header
+  header: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 4 },
+  heading: { fontSize: 22, fontWeight: "900", letterSpacing: -0.5 },
+  subheading: { fontSize: 12, color: "#999", fontWeight: "500", marginTop: 1 },
+  cogBtn: { margin: 0, marginTop: -2 },
 
   // Empty state
   emptyCard: {
-    borderRadius: 16, backgroundColor: "#fff", padding: 32,
-    alignItems: "center", gap: 8,
+    borderRadius: 18, backgroundColor: "#f5f5f5",
+    padding: 32, alignItems: "center", gap: 8,
   },
-  emptyText: { fontSize: 15, fontWeight: "600", color: "#aaa" },
-  emptyHint: { fontSize: 12, color: "#bbb", textAlign: "center" },
+  emptyIconWrap: {
+    width: 56, height: 56, borderRadius: 16,
+    backgroundColor: "#ebebeb", alignItems: "center", justifyContent: "center", marginBottom: 4,
+  },
+  emptyText: { fontSize: 15, fontWeight: "700", color: "#999" },
+  emptyHint: { fontSize: 12, color: "#bbb", textAlign: "center", lineHeight: 18 },
 
   // Feature cards
-  featureCard: { borderRadius: 16, backgroundColor: "#fff", overflow: "hidden", paddingBottom: 4 },
-  featureHeader: { flexDirection: "row", alignItems: "center", gap: 12, padding: 16, paddingBottom: 10 },
-  featureIcon: { width: 40, height: 40, borderRadius: 12, alignItems: "center", justifyContent: "center" },
-  featureTitleGroup: { flex: 1 },
-  featureTitle: { fontSize: 15, fontWeight: "700", color: "#1a1a1a" },
-  featureSub: { fontSize: 12, color: "#888", marginTop: 1 },
+  featureCard: { borderRadius: 20, backgroundColor: "#fff", overflow: "hidden" },
 
-  // Context row (roster name / source)
-  contextRow: { paddingHorizontal: 16, paddingBottom: 10 },
-  contextPill: { fontSize: 13, color: "#555", fontWeight: "500" },
-  contextEmpty: { fontSize: 12, color: "#bbb", fontStyle: "italic" },
-
-  // Week stats (schedule card only)
-  weekStatsRow: {
-    flexDirection: "row", paddingHorizontal: 16, paddingBottom: 12, gap: 0,
+  // Colored band header
+  cardBand: {
+    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    paddingHorizontal: 16, paddingVertical: 16,
   },
-  weekStat: { flex: 1, alignItems: "center" },
-  weekStatNum: { fontSize: 22, fontWeight: "800", color: "#6750a4", lineHeight: 26 },
-  weekStatLabel: { fontSize: 11, fontWeight: "700", color: "#555", marginTop: 1 },
-  weekStatDate: { fontSize: 10, color: "#aaa", marginTop: 1 },
-
-  navDivider: { marginHorizontal: 12 },
-
-  // Nav buttons inside cards
-  navRow: { flexDirection: "row", paddingHorizontal: 8, paddingVertical: 8, gap: 4 },
-  navBtn: {
-    flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 10, gap: 4,
+  bandLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  bandIconWrap: {
+    width: 42, height: 42, borderRadius: 13,
+    backgroundColor: "rgba(255,255,255,0.18)", alignItems: "center", justifyContent: "center",
   },
-  navBtnPressed: { backgroundColor: "#f3f0fa" },
-  navBtnLabel: { fontSize: 11, fontWeight: "600", color: "#6750a4", textAlign: "center" },
+  bandTitle: { fontSize: 16, fontWeight: "800", color: "#fff", letterSpacing: -0.2 },
+  bandSub: { fontSize: 11, color: "rgba(255,255,255,0.72)", marginTop: 2 },
+  bandBadge: {
+    backgroundColor: "rgba(255,255,255,0.18)", borderRadius: 20,
+    paddingHorizontal: 10, paddingVertical: 4,
+  },
+  bandBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
+
+  // Nav tile grid
+  navGrid: { flexDirection: "row", padding: 12, gap: 8 },
+  navTile: {
+    flex: 1, alignItems: "center", gap: 6,
+    paddingVertical: 12, borderRadius: 14, backgroundColor: "#fafafa",
+  },
+  navTilePressed: { backgroundColor: "#f0f0f0" },
+  navTileIcon: {
+    width: 38, height: 38, borderRadius: 11,
+    alignItems: "center", justifyContent: "center",
+  },
+  navTileLabel: { fontSize: 11, fontWeight: "700", textAlign: "center" },
 
   // Settings modal
   modal: { margin: 20, borderRadius: 20, backgroundColor: "#fff", padding: 20, maxWidth: 480, alignSelf: "center", width: "100%" },
