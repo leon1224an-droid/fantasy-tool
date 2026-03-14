@@ -65,11 +65,15 @@ export default function MatchupScreen() {
   const handleSelectA = (key: string) => { setTeamA(key); setIlA(yahooIL(key)); setMenuA(false); };
   const handleSelectB = (key: string) => { setTeamB(key); setIlB(yahooIL(key)); setMenuB(false); };
 
-  // When a team is loaded in the Roster tab, auto-select it as Team A
+  // When a team is loaded in the Roster tab, auto-select it as Team A.
+  // Use activeTeam.roster directly (same source as Compare) — do NOT depend on
+  // the teams query being loaded yet, and do NOT use yahooIL which reads from
+  // a separate cache that may lag.
   useEffect(() => {
-    if (!activeTeam || !teams) return;
-    handleSelectA(activeTeam.team_key);
-  }, [activeTeam?.team_key, teams]);
+    if (!activeTeam) return;
+    setTeamA(activeTeam.team_key);
+    setIlA(new Set(activeTeam.roster.filter((p) => p.is_il).map((p) => p.name)));
+  }, [activeTeam?.team_key]);
 
   const lineupTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
   const activeIl = lineupModal === "a" ? ilA : ilB;

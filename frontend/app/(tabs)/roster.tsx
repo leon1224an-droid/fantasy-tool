@@ -138,9 +138,18 @@ function ActiveRoster() {
 
   const loadYahooMutation = useMutation({
     mutationFn: (team: LeagueTeamResponse) => loadYahooTeamToRoster(team.team_key),
-    onSuccess: (rosterData, team) => {
-      // Use the mutation response directly so is_il values are applied immediately
-      queryClient.setQueryData(["roster"], rosterData);
+    onSuccess: (_data, team) => {
+      // Build roster directly from LeagueTeamResponse — same source Compare uses.
+      // Do NOT rely on backend response: SQLAlchemy identity-map can return stale
+      // is_il=False values even after the upsert commits correctly.
+      const directRoster: RosterPlayer[] = team.roster.map((p) => ({
+        name: p.name,
+        team: p.team,
+        positions: p.positions,
+        is_active: true,
+        is_il: p.is_il,
+      }));
+      queryClient.setQueryData(["roster"], directRoster);
       queryClient.invalidateQueries({ queryKey: ["player-grid"] });
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
       setShowYahooPicker(false);
