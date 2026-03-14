@@ -703,7 +703,7 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
     active = (
         await db.execute(select(Player).where(Player.is_active == True))
     ).scalars().all()
-    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True, is_il=False) for p in active]
+    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=p.is_active, is_il=p.is_il) for p in active]
 
 
 class UpdatePositionsRequest(BaseModel):
