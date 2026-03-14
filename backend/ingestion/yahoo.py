@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models import Player, PlayerProjection, TeamSchedule, YahooLeagueTeam
-from .projections import map_nba_position, ingest_projections
+from ..models import Player, YahooLeagueTeam
+from .projections import map_nba_position
 
 YAHOO_TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 YAHOO_API_BASE  = "https://fantasysports.yahooapis.com/fantasy/v2"
@@ -280,10 +280,10 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 
             p_stmt = (
                 insert(Player)
-                .values(name=pname, team=pteam, positions=positions, is_active=False)
+                .values(name=pname, team=pteam, positions=positions, is_active=False, is_il=pdata["is_il"])
                 .on_conflict_do_update(
                     constraint="uq_players_name",
-                    set_={"team": pteam, "positions": positions},
+                    set_={"team": pteam, "positions": positions, "is_il": pdata["is_il"]},
                 )
             )
             await db.execute(p_stmt)
@@ -291,7 +291,7 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 
             players_upserted += 1
             all_player_names.append(pname)
-            roster_list.append({"name": pname, "team": pteam, "positions": positions})
+            roster_list.append({"name": pname, "team": pteam, "positions": positions, "is_il": pdata["is_il"]})
 
         team_stmt = (
             insert(YahooLeagueTeam)
@@ -317,17 +317,6 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 
     await db.commit()
     print(f"[yahoo] Upserted {teams_upserted} teams, {players_upserted} players.")
-
-    # Fetch NBA stats projections for all Yahoo-rostered players so league
-    # rankings have real stat totals (not just the 13 active roster players).
-    from sqlalchemy import select as sa_select
-    ingested_players = (
-        await db.execute(
-            sa_select(Player).where(Player.name.in_(all_player_names))
-        )
-    ).scalars().all()
-    print(f"[yahoo] Fetching NBA projections for {len(ingested_players)} rostered players…")
-    await ingest_projections(db, players=ingested_players)
 
     return {"teams_upserted": teams_upserted, "players_upserted": players_upserted}
 
