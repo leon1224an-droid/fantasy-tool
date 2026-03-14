@@ -71,7 +71,7 @@ export default function MatchupScreen() {
     handleSelectA(activeTeam.team_key);
   }, [activeTeam?.team_key, teams]);
 
-  const activeTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
+  const lineupTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
   const activeIl = lineupModal === "a" ? ilA : ilB;
   const setActiveIl = lineupModal === "a" ? setIlA : setIlB;
 
@@ -96,7 +96,7 @@ export default function MatchupScreen() {
           <View style={styles.modalBox}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {activeTeam?.team_name ?? ""} — Set Lineup
+                {lineupTeam?.team_name ?? ""} — Set Lineup
               </Text>
               <IconButton icon="close" size={20} onPress={() => setLineupModal(null)} style={styles.modalClose} />
             </View>
@@ -106,7 +106,7 @@ export default function MatchupScreen() {
             </Text>
             <Divider style={styles.modalDivider} />
             <ScrollView style={styles.modalScroll}>
-              {(activeTeam?.roster ?? []).map((player) => {
+              {(lineupTeam?.roster ?? []).map((player) => {
                 const isIl = activeIl.has(player.name);
                 return (
                   <View key={player.name} style={styles.playerRow}>
@@ -132,10 +132,10 @@ export default function MatchupScreen() {
             <View style={styles.modalFooter}>
               <Text style={[
                 styles.modalCount,
-                (activeTeam?.roster.length ?? 0) - activeIl.size > 13 && { color: "#c62828" },
+                (lineupTeam?.roster.length ?? 0) - activeIl.size > 13 && { color: "#c62828" },
               ]}>
-                {(activeTeam?.roster.length ?? 0) - activeIl.size} active{" "}
-                {(activeTeam?.roster.length ?? 0) - activeIl.size > 13 ? `(need ${((activeTeam?.roster.length ?? 0) - activeIl.size) - 13} more IL)` : "✓"}
+                {(lineupTeam?.roster.length ?? 0) - activeIl.size} active{" "}
+                {(lineupTeam?.roster.length ?? 0) - activeIl.size > 13 ? `(need ${((lineupTeam?.roster.length ?? 0) - activeIl.size) - 13} more IL)` : "✓"}
                 {activeIl.size > 0 ? ` · ${activeIl.size} IL` : ""}
               </Text>
               <Button mode="contained" onPress={() => setLineupModal(null)} style={styles.modalDone}>
