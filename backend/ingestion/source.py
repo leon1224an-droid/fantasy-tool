@@ -14,7 +14,7 @@ VALID_SOURCES = {"nba_api", "yahoo", "bball_monster", "blended"}
 async def get_active_source(db: AsyncSession) -> str:
     """Return the current active source, defaulting to 'nba_api' if not set."""
     row = (await db.execute(select(ProjectionSourceSetting))).scalar_one_or_none()
-    return row.active_source if row else "nba_api"
+    return row.active_source if row else "bball_monster"
 
 
 async def set_active_source(db: AsyncSession, source: str) -> str:

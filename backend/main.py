@@ -683,19 +683,30 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
     # Deactivate current roster
     await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
 
-    # Activate all players in the Yahoo team's roster
-    player_names = [p["name"] for p in team.roster]
-    if player_names:
-        await db.execute(
-            update(Player).where(Player.name.in_(player_names)).values(is_active=True)
+    # Upsert each player with their Yahoo positions and activate them
+    for p_data in team.roster:
+        stmt = (
+            pg_insert(Player)
+            .values(
+                name=p_data["name"],
+                team=p_data["team"],
+                positions=p_data.get("positions", []),
+                is_active=True,
+                is_il=False,
+            )
+            .on_conflict_do_update(
+                constraint="uq_players_name",
+                set_={"team": p_data["team"], "positions": p_data.get("positions", []), "is_active": True, "is_il": False},
+            )
         )
+        await db.execute(stmt)
 
     await db.commit()
 
     active = (
         await db.execute(select(Player).where(Player.is_active == True))
     ).scalars().all()
-    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True) for p in active]
+    return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True, is_il=False) for p in active]
 
 
 class UpdatePositionsRequest(BaseModel):
