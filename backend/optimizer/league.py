@@ -2,13 +2,16 @@
 League-wide projections: team totals, H2H matchup comparison, and rankings.
 """
 
+from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import date as date_type
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..ingestion.source import get_active_source
-from ..models import Player, PlayerProjection, YahooLeagueTeam
+from ..models import GameDay, Player, PlayerProjection, YahooLeagueTeam
+from .daily import DailyPlayer, optimize_daily_lineup
 
 CATEGORIES = ["pts", "reb", "ast", "stl", "blk", "tov", "tpm", "fg_pct", "ft_pct"]
 LOWER_IS_BETTER = {"tov"}
@@ -59,6 +62,10 @@ async def compute_team_projections(
     For each Yahoo league team, sum projected stat totals for the week
     using the active projection source.
 
+    Games are counted using the same daily greedy optimizer as the calendar page:
+    each day we run optimize_daily_lineup for the players with games that day,
+    and only slotted players (≤10) count toward totals. This matches the calendar.
+
     - Players in `exclude[team_key]` are treated as IL and skipped.
     - After exclusions, only the top `max_players` (by projected_total) contribute.
     - FG%/FT% are computed as weighted averages using fg_att_pg/ft_att_pg as weights.
@@ -83,25 +90,62 @@ async def compute_team_projections(
     proj_lookup: dict[str, PlayerProjection] = {
         player.name: proj for player, proj in proj_rows
     }
+    player_team_lookup: dict[str, str] = {
+        player.name: player.team for player, proj in proj_rows
+    }
+    player_pos_lookup: dict[str, list[str]] = {
+        player.name: player.positions for player, proj in proj_rows
+    }
+
+    # Load every game day for this week so we can run the daily optimizer
+    gd_rows = (
+        await db.execute(select(GameDay).where(GameDay.week_num == week_num))
+    ).scalars().all()
+
+    # {nba_team: set[game_date]}
+    team_game_dates: dict[str, set[date_type]] = defaultdict(set)
+    for gd in gd_rows:
+        team_game_dates[gd.team].add(gd.game_date)
+
+    all_dates: list[date_type] = sorted({gd.game_date for gd in gd_rows})
 
     results: list[TeamProjection] = []
 
     for team in teams:
         team_exclude: set[str] = (exclude or {}).get(team.team_key, set())
 
-        # Collect eligible players (have a projection, not on IL)
-        eligible: list[PlayerProjection] = []
+        # Collect eligible players (have a projection, not excluded)
+        eligible: list[tuple[str, PlayerProjection]] = []
         for entry in (team.roster or []):
             pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
             if not pname or pname in team_exclude:
                 continue
             proj = proj_lookup.get(pname)
             if proj:
-                eligible.append(proj)
+                eligible.append((pname, proj))
 
         # Sort by projected value descending, cap at max_players
-        eligible.sort(key=lambda p: p.fantasy_ppg * p.games_count, reverse=True)
-        active = eligible[:max_players]
+        eligible.sort(key=lambda x: x[1].fantasy_ppg * x[1].games_count, reverse=True)
+        active_list = eligible[:max_players]
+        active_proj: dict[str, PlayerProjection] = {name: proj for name, proj in active_list}
+
+        # Run daily optimizer for each game day — counts only slotted starts (≤10)
+        starts_count: dict[str, int] = {name: 0 for name in active_proj}
+        for game_date in all_dates:
+            players_today: list[DailyPlayer] = []
+            for name, proj in active_proj.items():
+                nba_team = player_team_lookup.get(name)
+                if nba_team and game_date in team_game_dates.get(nba_team, set()):
+                    players_today.append(DailyPlayer(
+                        name=name,
+                        positions=player_pos_lookup.get(name, []),
+                        fantasy_ppg=proj.fantasy_ppg,
+                    ))
+            if players_today:
+                daily_result = optimize_daily_lineup(players_today)
+                for slot_player in daily_result.lineup.values():
+                    if slot_player and slot_player in starts_count:
+                        starts_count[slot_player] += 1
 
         acc: dict[str, float] = {
             "pts": 0.0, "reb": 0.0, "ast": 0.0, "stl": 0.0, "blk": 0.0,
@@ -110,8 +154,8 @@ async def compute_team_projections(
             "_ft_made": 0.0, "_ft_att": 0.0,
         }
 
-        for proj in active:
-            g = proj.games_count
+        for name, proj in active_proj.items():
+            g = starts_count.get(name, 0)
             acc["pts"]  += proj.pts_pg * g
             acc["reb"]  += proj.reb_pg * g
             acc["ast"]  += proj.ast_pg * g
@@ -135,7 +179,7 @@ async def compute_team_projections(
             acc["_ft_made"] / acc["_ft_att"] if acc["_ft_att"] > 0 else 0.0, 4
         )
 
-        total_games = sum(p.games_count for p in active)
+        total_games = sum(starts_count.values())
 
         results.append(TeamProjection(
             team_key=team.team_key,
