@@ -197,8 +197,8 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
     Loads GameDay + Player rows, runs the daily greedy optimizer for every
     day in all 3 weeks, and returns structured WeeklyCalendarResponse objects.
     """
-    # Load roster players with their fantasy_ppg (for tie-breaking in greedy)
-    player_rows = (await db.execute(select(Player).where(Player.is_active == True))).scalars().all()
+    # Load roster players with their fantasy_ppg (for tie-breaking in greedy) — IL excluded
+    player_rows = (await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))).scalars().all()
 
     roster_teams = {p.team for p in player_rows} or {p["team"] for p in ROSTER}
 
@@ -332,7 +332,7 @@ async def run_ingest_all(db: AsyncSession = Depends(get_db)):
 async def get_schedule(db: AsyncSession = Depends(get_db)):
     """Return stored game counts for all active-roster teams across playoff weeks."""
     active_players = (
-        await db.execute(select(Player).where(Player.is_active == True))
+        await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
     ).scalars().all()
     roster_teams = {p.team for p in active_players} or {p["team"] for p in ROSTER}
     rows = (
@@ -455,6 +455,7 @@ async def run_optimize(
                     PlayerProjection.week_num == week,
                     PlayerProjection.source == active_source,
                     Player.is_active == True,
+                    Player.is_il == False,
                 )
             )
         ).all()
@@ -530,6 +531,7 @@ class RosterPlayer(BaseModel):
     team: str
     positions: list[str]
     is_active: bool
+    is_il: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -537,14 +539,14 @@ class RosterPlayer(BaseModel):
 # ---------------------------------------------------------------------------
 @app.get("/roster", response_model=list[RosterPlayer], tags=["roster"])
 async def get_roster(db: AsyncSession = Depends(get_db)):
-    """Return all active roster players."""
+    """Return all active roster players (starters + IL)."""
     players = (
         await db.execute(
-            select(Player).where(Player.is_active == True).order_by(Player.name)
+            select(Player).where(Player.is_active == True).order_by(Player.is_il, Player.name)
         )
     ).scalars().all()
     return [
-        RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=p.is_active)
+        RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=p.is_active, is_il=p.is_il)
         for p in players
     ]
 
@@ -615,13 +617,13 @@ async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_d
     if not existing:
         count: int = (
             await db.execute(
-                select(func.count(Player.id)).where(Player.is_active == True)
+                select(func.count(Player.id)).where(Player.is_active == True, Player.is_il == False)
             )
         ).scalar_one()
         if count >= 13:
-            raise HTTPException(status_code=400, detail="Roster is full (max 13 players).")
+            raise HTTPException(status_code=400, detail="Roster is full (max 13 starters). Move a player to IL first.")
 
-    # Upsert player
+    # Upsert player (always added as starter; use /roster/{name}/il to move to IL)
     stmt = (
         pg_insert(Player)
         .values(
@@ -629,10 +631,11 @@ async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_d
             team=body.team,
             positions=body.positions,
             is_active=True,
+            is_il=False,
         )
         .on_conflict_do_update(
             constraint="uq_players_name",
-            set_={"team": body.team, "positions": body.positions, "is_active": True},
+            set_={"team": body.team, "positions": body.positions, "is_active": True, "is_il": False},
         )
     )
     await db.execute(stmt)
@@ -641,7 +644,7 @@ async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_d
     player = (
         await db.execute(select(Player).where(Player.name == body.name))
     ).scalar_one()
-    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=True)
+    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=True, is_il=False)
 
 
 @app.delete("/roster/{player_name}", tags=["roster"])
@@ -715,7 +718,49 @@ async def update_roster_positions(
     player = (
         await db.execute(select(Player).where(Player.name == player_name))
     ).scalar_one()
-    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active)
+    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active, is_il=player.is_il)
+
+
+class SetILRequest(BaseModel):
+    is_il: bool
+
+
+@app.patch("/roster/{player_name}/il", response_model=RosterPlayer, tags=["roster"])
+async def set_player_il(
+    player_name: str, body: SetILRequest, db: AsyncSession = Depends(get_db)
+):
+    """Toggle a player's IL status. IL players stay on the roster but are excluded from optimizer/calendar."""
+    player = (
+        await db.execute(select(Player).where(Player.name == player_name, Player.is_active == True))
+    ).scalar_one_or_none()
+    if not player:
+        raise HTTPException(status_code=404, detail=f"Active player '{player_name}' not found.")
+
+    if body.is_il and not player.is_il:
+        # Moving to IL — check limit
+        il_count: int = (
+            await db.execute(
+                select(func.count(Player.id))
+                .where(Player.is_active == True, Player.is_il == True, Player.name != player_name)
+            )
+        ).scalar_one()
+        if il_count >= 3:
+            raise HTTPException(status_code=400, detail="IL slots full (max 3).")
+    elif not body.is_il and player.is_il:
+        # Moving to starters — check limit
+        starter_count: int = (
+            await db.execute(
+                select(func.count(Player.id))
+                .where(Player.is_active == True, Player.is_il == False, Player.name != player_name)
+            )
+        ).scalar_one()
+        if starter_count >= 13:
+            raise HTTPException(status_code=400, detail="Starter roster is full (max 13). Remove a starter first.")
+
+    await db.execute(update(Player).where(Player.name == player_name).values(is_il=body.is_il))
+    await db.commit()
+    player = (await db.execute(select(Player).where(Player.name == player_name))).scalar_one()
+    return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active, is_il=player.is_il)
 
 
 # ---------------------------------------------------------------------------
@@ -988,9 +1033,9 @@ async def get_player_grid(db: AsyncSession = Depends(get_db)):
         for day in week_cal.days:
             all_days.append((day.date, day.day_label, week_cal.week_num))
 
-    # Load roster players
+    # Load roster players (IL excluded — they don't count in the grid)
     player_rows = (
-        await db.execute(select(Player).where(Player.is_active == True))
+        await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
     ).scalars().all()
 
     # Build set of dates each roster team plays

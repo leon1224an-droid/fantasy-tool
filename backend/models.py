@@ -31,6 +31,7 @@ class Player(Base):
     team: Mapped[str] = mapped_column(String(5), nullable=False)
     positions: Mapped[list[str]] = mapped_column(ARRAY(String), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_il: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     projections: Mapped[list["PlayerProjection"]] = relationship(
         back_populates="player", cascade="all, delete-orphan"

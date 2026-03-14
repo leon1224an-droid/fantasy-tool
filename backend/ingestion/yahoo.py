@@ -145,11 +145,8 @@ def _parse_positions(eligible: Any) -> list[str]:
         p = p.upper().strip()
         if p in ("PG", "SG", "SF", "PF", "C"):
             positions.add(p)
-        elif p == "G":
-            positions.update(["PG", "SG"])
-        elif p == "F":
-            positions.update(["SF", "PF"])
-        # skip IL, IL+, BN, UTIL, empty
+        # skip slot eligibility markers (G, F, UTIL, BN, IL, IL+) —
+        # they don't represent actual player positions
 
     return sorted(positions) if positions else ["SF", "PF"]
 

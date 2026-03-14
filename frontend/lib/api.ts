@@ -167,6 +167,7 @@ export interface RosterPlayer {
   team: string;
   positions: string[];
   is_active: boolean;
+  is_il: boolean;
 }
 
 export function getRoster(): Promise<RosterPlayer[]> {
@@ -277,6 +278,14 @@ export function simulateSchedule(players: { name: string; team: string; position
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ players }),
+  });
+}
+
+export function setPlayerIL(playerName: string, isIL: boolean): Promise<RosterPlayer> {
+  return apiFetch<RosterPlayer>(`/roster/${encodeURIComponent(playerName)}/il`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ is_il: isIL }),
   });
 }
 

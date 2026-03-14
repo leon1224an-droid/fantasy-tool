@@ -21,6 +21,7 @@ import {
   removeFromRoster,
   clearRoster,
   updateRosterPositions,
+  setPlayerIL,
   getSavedRosters,
   createSavedRoster,
   updateSavedRoster,
@@ -117,6 +118,11 @@ function ActiveRoster() {
     onSuccess: invalidateAll,
   });
 
+  const ilMutation = useMutation({
+    mutationFn: ({ name, isIL }: { name: string; isIL: boolean }) => setPlayerIL(name, isIL),
+    onSuccess: invalidateAll,
+  });
+
   const clearMutation = useMutation({
     mutationFn: clearRoster,
     onSuccess: () => { invalidateAll(); setLoadedRoster(null); },
@@ -149,17 +155,17 @@ function ActiveRoster() {
 
   const updateRosterMutation = useMutation({
     mutationFn: ({ id, name }: { id: number; name: string }) =>
-      updateSavedRoster(id, name, (data ?? []).map((p) => ({ name: p.name, team: p.team, positions: p.positions }))),
+      updateSavedRoster(id, name, (data ?? []).filter((p) => !p.is_il).map((p) => ({ name: p.name, team: p.team, positions: p.positions }))),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["saved-rosters"] }),
   });
 
-  // Auto-detect which saved roster matches the current active players (works across refreshes)
+  // Auto-detect which saved roster matches the current starters (IL excluded)
   const detectedRoster = useMemo(() => {
     if (!data || !savedRosters) return null;
-    const activeNames = new Set(data.map((p) => p.name));
+    const starterNames = new Set(data.filter((p) => !p.is_il).map((p) => p.name));
     return savedRosters.find((s) => {
       const savedNames = new Set(s.players.map((p) => p.name));
-      return activeNames.size === savedNames.size && [...activeNames].every((n) => savedNames.has(n));
+      return starterNames.size === savedNames.size && [...starterNames].every((n) => savedNames.has(n));
     }) ?? null;
   }, [data, savedRosters]);
 
@@ -172,19 +178,22 @@ function ActiveRoster() {
     return <LoadingOrError loading={isLoading} error={error as Error | null} onRetry={refetch} />;
   }
 
-  const count = data?.length ?? 0;
+  const starters = data?.filter((p) => !p.is_il) ?? [];
+  const ilPlayers = data?.filter((p) => p.is_il) ?? [];
+  const starterCount = starters.length;
+  const ilCount = ilPlayers.length;
 
   const handleSave = () => {
-    if (!saveName.trim() || !data) return;
+    if (!saveName.trim()) return;
     saveRosterMutation.mutate({
       name: saveName.trim(),
-      players: data.map((p) => ({ name: p.name, team: p.team, positions: p.positions })),
+      players: starters.map((p) => ({ name: p.name, team: p.team, positions: p.positions })),
     });
   };
 
   const handleUpdate = () => {
     if (!activeLoadedRoster) return;
-    const msg = `Update "${activeLoadedRoster.name}" with your current ${count} players?`;
+    const msg = `Update "${activeLoadedRoster.name}" with your current ${starterCount} starters?`;
     if (Platform.OS === "web") {
       if (window.confirm(msg)) updateRosterMutation.mutate(activeLoadedRoster);
     } else {
@@ -196,7 +205,8 @@ function ActiveRoster() {
   };
 
   const handleClearAll = () => {
-    const msg = "Remove all players from your active roster?";
+    const total = starterCount + ilCount;
+    const msg = `Remove all ${total} players from your active roster?`;
     if (Platform.OS === "web") {
       if (window.confirm(msg)) clearMutation.mutate();
     } else {
@@ -217,9 +227,14 @@ function ActiveRoster() {
           )}
         </View>
         <View style={styles.rosterHeaderRight}>
-          <Text style={[styles.countBadge, { color: count >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
-            {count}/13
+          <Text style={[styles.countBadge, { color: starterCount >= 13 ? "#c62828" : theme.colors.onSurfaceVariant }]}>
+            {starterCount}/13
           </Text>
+          {ilCount > 0 && (
+            <Text style={[styles.countBadge, { color: "#e65100", marginLeft: 4 }]}>
+              · IL {ilCount}/3
+            </Text>
+          )}
           {/* Load from Yahoo league */}
           <IconButton
             icon="account-group-outline"
@@ -256,7 +271,7 @@ function ActiveRoster() {
             />
           )}
           {/* Clear all */}
-          {count > 0 && (
+          {(starterCount + ilCount) > 0 && (
             <IconButton
               icon="trash-can-outline"
               size={20}
@@ -356,19 +371,46 @@ function ActiveRoster() {
         <Text style={styles.errorText}>{(saveRosterMutation.error as Error).message}</Text>
       )}
 
-      {count === 0 && !showLoadPicker && (
+      {starterCount === 0 && ilCount === 0 && !showLoadPicker && (
         <Text style={styles.emptyText}>No players yet — add some above.</Text>
       )}
 
-      {data?.map((player, idx) => (
+      {/* Starters */}
+      {starters.map((player, idx) => (
         <RosterRow
           key={player.name}
           player={player}
-          isLast={idx === data.length - 1}
+          isLast={idx === starters.length - 1 && ilCount === 0}
           onRemove={() => removeMutation.mutate(player.name)}
           removing={removeMutation.isPending && removeMutation.variables === player.name}
+          onToggleIL={() => ilMutation.mutate({ name: player.name, isIL: true })}
+          togglingIL={ilMutation.isPending && ilMutation.variables?.name === player.name}
+          ilDisabled={ilCount >= 3}
         />
       ))}
+
+      {/* IL section */}
+      {ilCount > 0 && (
+        <>
+          <View style={styles.ilSectionHeader}>
+            <View style={styles.ilBadge}><Text style={styles.ilBadgeText}>IL</Text></View>
+            <Text style={styles.ilSectionLabel}>Injured List ({ilCount}/3) — excluded from optimizer &amp; calendar</Text>
+          </View>
+          {ilPlayers.map((player, idx) => (
+            <RosterRow
+              key={player.name}
+              player={player}
+              isLast={idx === ilPlayers.length - 1}
+              onRemove={() => removeMutation.mutate(player.name)}
+              removing={removeMutation.isPending && removeMutation.variables === player.name}
+              onToggleIL={() => ilMutation.mutate({ name: player.name, isIL: false })}
+              togglingIL={ilMutation.isPending && ilMutation.variables?.name === player.name}
+              ilDisabled={starterCount >= 13}
+              isIL
+            />
+          ))}
+        </>
+      )}
     </Surface>
   );
 }
@@ -377,12 +419,16 @@ function ActiveRoster() {
 // Single roster row with inline position editor
 // ---------------------------------------------------------------------------
 function RosterRow({
-  player, isLast, onRemove, removing,
+  player, isLast, onRemove, removing, onToggleIL, togglingIL, ilDisabled, isIL,
 }: {
   player: RosterPlayer;
   isLast: boolean;
   onRemove: () => void;
   removing: boolean;
+  onToggleIL: () => void;
+  togglingIL: boolean;
+  ilDisabled: boolean;
+  isIL?: boolean;
 }) {
   const theme = useTheme();
   const queryClient = useQueryClient();
@@ -418,6 +464,18 @@ function RosterRow({
             onPress={() => { setPositions(player.positions); setEditing((v) => !v); }}
             style={styles.actionBtn}
           />
+          {togglingIL ? (
+            <ActivityIndicator size={16} style={styles.actionBtn} />
+          ) : (
+            <IconButton
+              icon={isIL ? "arrow-up-circle-outline" : "medical-bag"}
+              size={18}
+              iconColor={isIL ? "#2e7d32" : "#e65100"}
+              onPress={onToggleIL}
+              disabled={ilDisabled}
+              style={[styles.actionBtn, ilDisabled && { opacity: 0.3 }]}
+            />
+          )}
           {removing ? (
             <ActivityIndicator size={16} style={styles.actionBtn} />
           ) : (
@@ -638,7 +696,7 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
 
   const { data: rosterData } = useQuery({ queryKey: ["roster"], queryFn: getRoster });
   const rosterNames = new Set(rosterData?.map((p) => p.name) ?? []);
-  const rosterCount = rosterData?.length ?? 0;
+  const rosterCount = rosterData?.filter((p) => !p.is_il).length ?? 0;
 
   const addMutation = useMutation({
     mutationFn: addToRoster,
@@ -803,6 +861,12 @@ const styles = StyleSheet.create({
   posChip: { height: 30 },
   posChipText: { fontSize: 12 },
   editActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+
+  // IL section
+  ilSectionHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: "#fff8f0", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#f5cba7" },
+  ilBadge: { backgroundColor: "#e65100", borderRadius: 4, paddingHorizontal: 6, paddingVertical: 2 },
+  ilBadgeText: { color: "#fff", fontSize: 11, fontWeight: "700" },
+  ilSectionLabel: { fontSize: 12, color: "#b45309", flex: 1 },
 
   // Saved rosters
   savedHeaderLeft: { flexDirection: "row", alignItems: "center", gap: 8 },

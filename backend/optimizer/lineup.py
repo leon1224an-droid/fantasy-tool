@@ -187,6 +187,7 @@ async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
                     PlayerProjection.week_num == week_num,
                     PlayerProjection.source == active_source,
                     Player.is_active == True,
+                    Player.is_il == False,
                 )
             )
         ).all()
