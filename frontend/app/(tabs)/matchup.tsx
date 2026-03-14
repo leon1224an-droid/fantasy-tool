@@ -277,10 +277,9 @@ function MatchupCard({ matchup }: { matchup: MatchupResult }) {
                   {fmt(cat.a_value, cat.category)}
                 </Text>
                 <View style={styles.catNameCol}>
+                  {aWins && <Text style={styles.arrowText}>◀</Text>}
                   <Text style={styles.catName}>{meta?.label ?? cat.category}</Text>
-                  {cat.winner !== "tie" && (
-                    <Text style={styles.arrowText}>{aWins ? "◀" : "▶"}</Text>
-                  )}
+                  {bWins && <Text style={styles.arrowText}>▶</Text>}
                 </View>
                 <Text style={[styles.catVal, styles.catValRight, bWins && styles.winnerText]}>
                   {fmt(cat.b_value, cat.category)}
