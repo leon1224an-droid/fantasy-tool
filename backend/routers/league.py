@@ -75,6 +75,8 @@ class MatchupResponse(BaseModel):
     a_wins: int
     b_wins: int
     ties: int
+    a_games: int
+    b_games: int
 
 
 class ScheduledMatchupResponse(BaseModel):
@@ -204,4 +206,6 @@ async def get_matchup(
         a_wins=result.a_wins,
         b_wins=result.b_wins,
         ties=result.ties,
+        a_games=result.a_games,
+        b_games=result.b_games,
     )

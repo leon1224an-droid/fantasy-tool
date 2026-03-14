@@ -20,6 +20,7 @@ class TeamProjection:
     team_name: str
     week_num: int
     totals: dict[str, float] = field(default_factory=dict)
+    total_games: int = 0
 
 
 @dataclass
@@ -40,6 +41,8 @@ class MatchupResult:
     a_wins: int = 0
     b_wins: int = 0
     ties: int = 0
+    a_games: int = 0
+    b_games: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +121,19 @@ async def compute_team_projections(db: AsyncSession, week_num: int) -> list[Team
             acc["_ft_made"] / acc["_ft_att"] if acc["_ft_att"] > 0 else 0.0, 4
         )
 
+        total_games = sum(
+            proj_lookup[pname].games_count
+            for entry in (team.roster or [])
+            if (pname := (entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)))
+            and pname in proj_lookup
+        )
+
         results.append(TeamProjection(
             team_key=team.team_key,
             team_name=team.team_name,
             week_num=week_num,
             totals=totals,
+            total_games=total_games,
         ))
 
     return results
@@ -134,7 +145,7 @@ async def compute_team_projections(db: AsyncSession, week_num: int) -> list[Team
 
 def project_matchup(a: TeamProjection, b: TeamProjection) -> MatchupResult:
     """Compare two teams category by category."""
-    result = MatchupResult(team_a=a.team_name, team_b=b.team_name, week_num=a.week_num)
+    result = MatchupResult(team_a=a.team_name, team_b=b.team_name, week_num=a.week_num, a_games=a.total_games, b_games=b.total_games)
 
     for cat in CATEGORIES:
         a_val = a.totals.get(cat, 0.0)

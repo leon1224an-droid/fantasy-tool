@@ -406,6 +406,8 @@ export interface MatchupResult {
   a_wins: number;
   b_wins: number;
   ties: number;
+  a_games: number;
+  b_games: number;
 }
 
 export function loadYahooTeamToRoster(teamKey: string): Promise<RosterPlayer[]> {
