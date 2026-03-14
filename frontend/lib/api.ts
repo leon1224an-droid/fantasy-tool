@@ -364,6 +364,7 @@ export interface RosterEntry {
   name: string;
   team: string;
   positions: string[];
+  is_il: boolean;
 }
 
 export interface LeagueTeamResponse {

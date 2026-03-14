@@ -119,11 +119,14 @@ async def compute_team_projections(
     for team in teams:
         team_exclude: set[str] = (exclude or {}).get(team.team_key, set())
 
-        # Collect all roster players who have a Player record and aren't excluded
+        # Collect all roster players who are active (not on Yahoo IL) and not manually excluded
         eligible_names: list[str] = []
         for entry in (team.roster or []):
             pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
             if not pname or pname in team_exclude or pname not in player_record:
+                continue
+            # Skip players Yahoo has placed on IL/IL+/NA slot
+            if entry.get("is_il", False):
                 continue
             eligible_names.append(pname)
 

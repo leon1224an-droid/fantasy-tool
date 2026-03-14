@@ -33,6 +33,7 @@ class RosterEntry(BaseModel):
     name: str
     team: str
     positions: list[str]
+    is_il: bool = False
 
 
 class LeagueTeamResponse(BaseModel):
@@ -107,6 +108,7 @@ async def get_league_teams(db: AsyncSession = Depends(get_db)):
                     name=entry.get("name", ""),
                     team=entry.get("team", ""),
                     positions=entry.get("positions", []),
+                    is_il=entry.get("is_il", False),
                 ))
         result.append(LeagueTeamResponse(
             team_key=t.team_key,

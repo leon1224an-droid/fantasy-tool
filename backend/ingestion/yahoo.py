@@ -197,7 +197,7 @@ async def _get_league_teams(token: str, league_key: str) -> list[dict]:
 
 
 async def _get_team_roster(token: str, team_key: str) -> list[dict]:
-    """Return [{name, team, positions}] for all players on a roster."""
+    """Return [{name, team, positions, is_il}] for all players on a roster."""
     data = await _yget(token, f"team/{team_key}/roster")
     raw_players = _dig(data, "fantasy_content", "team", 1, "roster", "0", "players") or {}
 
@@ -220,11 +220,29 @@ async def _get_team_roster(token: str, team_key: str) -> list[dict]:
         raw_eligible = attrs.get("eligible_positions")
         positions = _parse_positions(raw_eligible)
 
-        # Debug: log raw eligible_positions for first player of first team
-        if not players:
-            print(f"[yahoo] DEBUG eligible_positions sample ({full_name}): {raw_eligible!r} → {positions}")
+        # Extract selected_position to detect IL slots
+        is_il = False
+        if isinstance(player_arr, list) and len(player_arr) > 1:
+            part2 = player_arr[1]
+            if isinstance(part2, dict):
+                sel = part2.get("selected_position")
+                if isinstance(sel, dict):
+                    pos_val = str(sel.get("position", ""))
+                elif isinstance(sel, list):
+                    pos_val = next(
+                        (str(item.get("position", "")) for item in sel
+                         if isinstance(item, dict) and "position" in item),
+                        "",
+                    )
+                else:
+                    pos_val = ""
+                is_il = pos_val.upper() in ("IL", "IL+", "NA")
 
-        players.append({"name": full_name, "team": team_abbr, "positions": positions})
+        # Debug: log first player's eligible + selected positions
+        if not players:
+            print(f"[yahoo] DEBUG {full_name}: eligible={raw_eligible!r} → {positions}, is_il={is_il}")
+
+        players.append({"name": full_name, "team": team_abbr, "positions": positions, "is_il": is_il})
 
     return players
 

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { ScrollView, StyleSheet, View } from "react-native";
-import { Button, Chip, Divider, List, Surface, Text, useTheme } from "react-native-paper";
+import { Chip, Divider, List, Surface, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import { getLeagueRankings, getLeagueTeams, getAllSchedule, TeamRankingResponse, ScheduleRow } from "../../lib/api";
 
@@ -113,7 +113,7 @@ export default function LeagueScreen() {
               <View style={[styles.tableRow, styles.tableHeader]}>
                 <Text style={[styles.cell, styles.rankCell, styles.headerText]}>#</Text>
                 <Text style={[styles.cell, styles.nameCell, styles.headerText]}>Team</Text>
-                <Text style={[styles.cell, styles.gpCell, styles.headerText]}>GP</Text>
+                <Text style={[styles.cell, styles.gpCell, styles.headerText]}>Starts</Text>
                 {CAT_COLS.map((c) => (
                   <Text key={c.key} style={[styles.cell, styles.numCell, styles.headerText]}>
                     {c.label}
@@ -142,7 +142,7 @@ export default function LeagueScreen() {
               ))}
             </Surface>
             <Text style={styles.tableNote}>
-              GP = total player-game starts on roster this week
+              Starts = optimizer-constrained playable starts for the week (10-slot lineup, top 13 active players)
             </Text>
           </>
         )}
@@ -176,10 +176,16 @@ export default function LeagueScreen() {
                         <List.Item
                           key={p.name}
                           title={p.name}
-                          description={`${p.team} · ${p.positions.join("/")}    ${gameParts}`}
-                          left={(props) => <List.Icon {...props} icon="basketball" />}
-                          titleStyle={styles.rosterPlayerName}
-                          descriptionStyle={styles.rosterPlayerDesc}
+                          titleStyle={[styles.rosterPlayerName, p.is_il && styles.ilPlayerName]}
+                          description={`${p.is_il ? "IL · " : ""}${p.team} · ${p.positions.join("/")}    ${gameParts}`}
+                          descriptionStyle={[styles.rosterPlayerDesc, p.is_il && styles.ilPlayerDesc]}
+                          left={(props) => (
+                            <List.Icon
+                              {...props}
+                              icon={p.is_il ? "medical-bag" : "basketball"}
+                              color={p.is_il ? "#e65100" : undefined}
+                            />
+                          )}
                         />
                       );
                     })
@@ -224,4 +230,6 @@ const styles = StyleSheet.create({
 
   rosterPlayerName: { fontSize: 13, fontWeight: "600" },
   rosterPlayerDesc: { fontSize: 11, color: "#888" },
+  ilPlayerName: { color: "#e65100" },
+  ilPlayerDesc: { color: "#bf360c" },
 });
