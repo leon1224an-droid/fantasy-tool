@@ -9,7 +9,6 @@ from datetime import date as date_type
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..ingestion.source import get_active_source
 from ..models import GameDay, Player, PlayerProjection, YahooLeagueTeam
 from .daily import DailyPlayer, optimize_daily_lineup
 
@@ -59,49 +58,55 @@ async def compute_team_projections(
     max_players: int = 13,
 ) -> list[TeamProjection]:
     """
-    For each Yahoo league team, sum projected stat totals for the week
-    using the active projection source.
+    For each Yahoo league team, compute projected stat totals for the week.
 
-    Games are counted using the same daily greedy optimizer as the calendar page:
-    each day we run optimize_daily_lineup for the players with games that day,
-    and only slotted players (≤10) count toward totals. This matches the calendar.
+    Per-game stats  → bball_monster source only (the curated projection CSV).
+    Games per week  → GameDay table + daily greedy optimizer (10-slot constraint),
+                      identical to how the calendar/grid tabs count starts.
+                      Every rostered player participates in the optimizer regardless
+                      of whether they have a bball_monster projection row; players
+                      without BM stats occupy slots but contribute 0 to totals.
 
     - Players in `exclude[team_key]` are treated as IL and skipped.
-    - After exclusions, only the top `max_players` (by projected_total) contribute.
-    - FG%/FT% are computed as weighted averages using fg_att_pg/ft_att_pg as weights.
+    - After exclusions, only the top `max_players` contribute (sorted by BM
+      projected_total where available, otherwise 0).
+    - FG%/FT% are weighted averages using fg_att_pg/ft_att_pg as weights.
     """
-    active_source = await get_active_source(db)
-
     teams = (await db.execute(select(YahooLeagueTeam))).scalars().all()
     if not teams:
         return []
 
-    # Fetch projections for ALL sources so players missing from the active source
-    # (e.g. not in the uploaded BM CSV) still count via fallback.
-    all_proj_rows = (
+    # --- bball_monster per-game stats (stats source) -------------------------
+    bm_rows = (
         await db.execute(
             select(Player, PlayerProjection)
             .join(PlayerProjection, Player.id == PlayerProjection.player_id)
-            .where(PlayerProjection.week_num == week_num)
+            .where(
+                PlayerProjection.week_num == week_num,
+                PlayerProjection.source == "bball_monster",
+            )
         )
     ).all()
+    bm_lookup: dict[str, PlayerProjection] = {p.name: proj for p, proj in bm_rows}
 
-    # Prefer active source; fall back to any other available source per player.
-    proj_lookup: dict[str, PlayerProjection] = {}
-    player_team_lookup: dict[str, str] = {}
-    player_pos_lookup: dict[str, list[str]] = {}
-    for player, proj in all_proj_rows:
-        if player.name not in proj_lookup or proj.source == active_source:
-            proj_lookup[player.name] = proj
-        player_team_lookup[player.name] = player.team
-        player_pos_lookup[player.name] = player.positions
+    # --- Player records for ALL Yahoo-rostered players (positions + NBA team) -
+    all_roster_names: set[str] = set()
+    for team in teams:
+        for entry in (team.roster or []):
+            pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+            if pname:
+                all_roster_names.add(pname)
 
-    # Load every game day for this week so we can run the daily optimizer
+    player_rows = (
+        await db.execute(select(Player).where(Player.name.in_(list(all_roster_names))))
+    ).scalars().all()
+    player_record: dict[str, Player] = {p.name: p for p in player_rows}
+
+    # --- GameDay schedule for the week (games source) ------------------------
     gd_rows = (
         await db.execute(select(GameDay).where(GameDay.week_num == week_num))
     ).scalars().all()
 
-    # {nba_team: set[game_date]}
     team_game_dates: dict[str, set[date_type]] = defaultdict(set)
     for gd in gd_rows:
         team_game_dates[gd.team].add(gd.game_date)
@@ -114,38 +119,40 @@ async def compute_team_projections(
     for team in teams:
         team_exclude: set[str] = (exclude or {}).get(team.team_key, set())
 
-        # Collect eligible players (have a projection, not excluded)
-        eligible: list[tuple[str, PlayerProjection]] = []
+        # Collect all roster players who have a Player record and aren't excluded
+        eligible_names: list[str] = []
         for entry in (team.roster or []):
             pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
-            if not pname or pname in team_exclude:
+            if not pname or pname in team_exclude or pname not in player_record:
                 continue
-            proj = proj_lookup.get(pname)
-            if proj:
-                eligible.append((pname, proj))
+            eligible_names.append(pname)
 
-        # Sort by projected value descending, cap at max_players
-        eligible.sort(key=lambda x: x[1].fantasy_ppg * x[1].games_count, reverse=True)
-        active_list = eligible[:max_players]
-        active_proj: dict[str, PlayerProjection] = {name: proj for name, proj in active_list}
+        # Sort: BM players first (by BM projected value), unknown players last
+        eligible_names.sort(
+            key=lambda n: bm_lookup[n].fantasy_ppg * bm_lookup[n].games_count
+                          if n in bm_lookup else 0.0,
+            reverse=True,
+        )
+        active_names: set[str] = set(eligible_names[:max_players])
 
-        # Warn about players whose NBA team abbreviation has no GameDay rows
-        for name in active_proj:
-            nba_team = player_team_lookup.get(name)
+        # Warn about team abbreviation mismatches
+        for name in active_names:
+            nba_team = player_record[name].team
             if nba_team and nba_team not in known_teams:
-                print(f"[league] WARNING: {name} team='{nba_team}' not found in GameDay (wk{week_num}). Known: {sorted(known_teams)}")
+                print(f"[league] WARNING: {name} team='{nba_team}' not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
 
-        # Run daily optimizer for each game day — counts only slotted starts (≤10)
-        starts_count: dict[str, int] = {name: 0 for name in active_proj}
+        # --- Daily optimizer: uses ALL active players for correct slot filling -
+        starts_count: dict[str, int] = {name: 0 for name in active_names}
         for game_date in all_dates:
             players_today: list[DailyPlayer] = []
-            for name, proj in active_proj.items():
-                nba_team = player_team_lookup.get(name)
-                if nba_team and game_date in team_game_dates.get(nba_team, set()):
+            for name in active_names:
+                p = player_record[name]
+                if game_date in team_game_dates.get(p.team, set()):
                     players_today.append(DailyPlayer(
                         name=name,
-                        positions=player_pos_lookup.get(name, []),
-                        fantasy_ppg=proj.fantasy_ppg,
+                        positions=p.positions,
+                        # Use BM ppg for tie-breaking; 0 if not in BM
+                        fantasy_ppg=bm_lookup[name].fantasy_ppg if name in bm_lookup else 0.0,
                     ))
             if players_today:
                 daily_result = optimize_daily_lineup(players_today)
@@ -153,15 +160,18 @@ async def compute_team_projections(
                     if slot_player and slot_player in starts_count:
                         starts_count[slot_player] += 1
 
+        # --- Stats: BM per-game rates × actual starts ------------------------
         acc: dict[str, float] = {
             "pts": 0.0, "reb": 0.0, "ast": 0.0, "stl": 0.0, "blk": 0.0,
             "tov": 0.0, "tpm": 0.0,
             "_fg_made": 0.0, "_fg_att": 0.0,
             "_ft_made": 0.0, "_ft_att": 0.0,
         }
-
-        for name, proj in active_proj.items():
+        for name in active_names:
             g = starts_count.get(name, 0)
+            proj = bm_lookup.get(name)
+            if not proj or g == 0:
+                continue
             acc["pts"]  += proj.pts_pg * g
             acc["reb"]  += proj.reb_pg * g
             acc["ast"]  += proj.ast_pg * g
@@ -169,7 +179,6 @@ async def compute_team_projections(
             acc["blk"]  += proj.blk_pg * g
             acc["tov"]  += proj.tov_pg * g
             acc["tpm"]  += proj.tpm_pg * g
-
             fg_att = proj.fg_att_pg * g
             ft_att = proj.ft_att_pg * g
             acc["_fg_made"] += proj.fg_pct * fg_att
@@ -185,14 +194,12 @@ async def compute_team_projections(
             acc["_ft_made"] / acc["_ft_att"] if acc["_ft_att"] > 0 else 0.0, 4
         )
 
-        total_games = sum(starts_count.values())
-
         results.append(TeamProjection(
             team_key=team.team_key,
             team_name=team.team_name,
             week_num=week_num,
             totals=totals,
-            total_games=total_games,
+            total_games=sum(starts_count.values()),
         ))
 
     return results
