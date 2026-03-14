@@ -49,6 +49,8 @@ export default function CompareScreen() {
 
   const [rosterA, setRosterA] = useState<ComparePlayer[]>([]);
   const [rosterB, setRosterB] = useState<ComparePlayer[]>([]);
+  const [teamNameA, setTeamNameA] = useState<string | null>(null);
+  const [teamNameB, setTeamNameB] = useState<string | null>(null);
   const [activePanel, setActivePanel] = useState<"A" | "B">("A");
 
   // IL sets: player names excluded from each side's simulation
@@ -60,6 +62,7 @@ export default function CompareScreen() {
     if (!activeTeam) return;
     setRosterA(activeTeam.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
     setIlA(new Set(activeTeam.roster.filter((p) => p.is_il).map((p) => p.name)));
+    setTeamNameA(activeTeam.team_name);
   }, [activeTeam?.team_key]);
 
   // Active (non-IL) rosters, capped at 13
@@ -129,10 +132,12 @@ export default function CompareScreen() {
   const loadYahooToA = (team: LeagueTeamResponse) => {
     setRosterA(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
     setIlA(new Set(team.roster.filter((p) => p.is_il).map((p) => p.name)));
+    setTeamNameA(team.team_name);
   };
   const loadYahooToB = (team: LeagueTeamResponse) => {
     setRosterB(team.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
     setIlB(new Set(team.roster.filter((p) => p.is_il).map((p) => p.name)));
+    setTeamNameB(team.team_name);
   };
 
   const toggleIlA = useCallback((name: string) => {
@@ -207,6 +212,7 @@ export default function CompareScreen() {
         <RosterPanel
           side="A"
           color="#6750a4"
+          teamName={teamNameA}
           players={rosterA}
           il={ilA}
           onToggleIl={toggleIlA}
@@ -222,6 +228,7 @@ export default function CompareScreen() {
         <RosterPanel
           side="B"
           color="#c2185b"
+          teamName={teamNameB}
           players={rosterB}
           il={ilB}
           onToggleIl={toggleIlB}
@@ -287,10 +294,11 @@ function ComparisonRow({
 // Roster panel
 // ---------------------------------------------------------------------------
 function RosterPanel({
-  side, color, players, il, onToggleIl, onRemove, onAdd, onLoadSaved, onLoadYahoo, startsMap, isLoading,
+  side, color, teamName, players, il, onToggleIl, onRemove, onAdd, onLoadSaved, onLoadYahoo, startsMap, isLoading,
 }: {
   side: "A" | "B";
   color: string;
+  teamName: string | null;
   players: ComparePlayer[];
   il: Set<string>;
   onToggleIl: (name: string) => void;
@@ -314,10 +322,12 @@ function RosterPanel({
       {/* Panel header */}
       <View style={[styles.panelHeader, { backgroundColor: color + "12" }]}>
         <View style={styles.panelTitleGroup}>
-          <Text style={[styles.panelTitle, { color }]}>Roster {side}</Text>
+          <Text style={[styles.panelTitle, { color }]} numberOfLines={1}>
+            {teamName ?? `Roster ${side}`}
+          </Text>
           {players.length > 0 && (
             <Text style={[styles.rosterCountText, overCap && styles.rosterCountWarn]}>
-              {cappedCount} active{il.size > 0 ? ` · ${il.size} IL` : ""}{overCap ? ` (max ${ROSTER_CAP})` : ""}
+              {activeCount} active{il.size > 0 ? ` · ${il.size} IL` : ""}{overCap ? ` (max ${ROSTER_CAP})` : ""}
             </Text>
           )}
         </View>
