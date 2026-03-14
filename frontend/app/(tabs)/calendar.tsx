@@ -221,7 +221,7 @@ const styles = StyleSheet.create({
     flex: 1, alignItems: "center", paddingVertical: 10, borderRadius: 12,
     backgroundColor: "#fff", borderWidth: 1,
   },
-  weekStatValue: { fontSize: 24, fontWeight: "800", lineHeight: 28 },
+  weekStatValue: { fontSize: 20, fontWeight: "800", lineHeight: 24 },
   weekStatLabel: { fontSize: 11, color: "#888", marginTop: 2 },
 
   tableScrollH: { marginBottom: 4 },

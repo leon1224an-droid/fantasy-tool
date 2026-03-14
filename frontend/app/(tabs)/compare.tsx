@@ -532,7 +532,7 @@ const styles = StyleSheet.create({
   simNote: { fontSize: 10, color: "#aaa", textAlign: "center", paddingBottom: 10 },
   compRow: { flexDirection: "row", alignItems: "center", paddingVertical: 10, paddingHorizontal: 16 },
   compRowTotal: { backgroundColor: "#fafafa" },
-  compValue: { fontSize: 22, fontWeight: "800", minWidth: 52, textAlign: "center" },
+  compValue: { fontSize: 18, fontWeight: "800", minWidth: 52, textAlign: "center" },
   compValueWinner: { fontSize: 26, minWidth: 58 },
   compMid: { flex: 1, alignItems: "center" },
   compLabel: { fontSize: 13, color: "#666" },

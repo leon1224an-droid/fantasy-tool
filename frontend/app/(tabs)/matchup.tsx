@@ -213,7 +213,7 @@ function MatchupCard({ matchup }: { matchup: MatchupResult }) {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
-  heading: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5, marginBottom: 4 },
+  heading: { fontSize: 18, fontWeight: "700", letterSpacing: -0.3, marginBottom: 4 },
 
   filterLabel: { fontSize: 11, fontWeight: "700", color: "#888", textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 4 },
   weekRow: { flexDirection: "row", gap: 8, marginBottom: 4 },
@@ -230,7 +230,7 @@ const styles = StyleSheet.create({
   summaryRow: { flexDirection: "row", alignItems: "center" },
   summaryTeam: { flex: 1, alignItems: "center", gap: 2 },
   summaryTeamName: { fontSize: 12, fontWeight: "600", color: "#555", textAlign: "center" },
-  summaryWins: { fontSize: 40, fontWeight: "900", color: "#6750a4", lineHeight: 46 },
+  summaryWins: { fontSize: 32, fontWeight: "900", color: "#6750a4", lineHeight: 38 },
   summaryGames: { fontSize: 11, color: "#aaa", fontWeight: "500" },
   summarySep: { paddingHorizontal: 12, alignItems: "center" },
   summaryCatLabel: { fontSize: 12, color: "#888" },

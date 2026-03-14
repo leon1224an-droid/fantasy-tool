@@ -258,8 +258,8 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   flex1: { flex: 1 },
   summaryTable: { minWidth: 380 },
-  title: { fontSize: 22, fontWeight: "700", marginTop: 16, marginHorizontal: 16 },
-  subtitle: { fontSize: 13, marginHorizontal: 16, marginBottom: 4 },
+  title: { fontSize: 18, fontWeight: "700", marginTop: 12, marginHorizontal: 16 },
+  subtitle: { fontSize: 12, color: "#888", marginHorizontal: 16, marginBottom: 4 },
   controls: { marginHorizontal: 16, marginVertical: 10 },
   emptyText: { color: "#888", textAlign: "center", margin: 32, fontSize: 14 },
 

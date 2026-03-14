@@ -170,7 +170,7 @@ export default function LeagueScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1 },
   content: { padding: 16, paddingBottom: 32, gap: 12 },
-  heading: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5, marginBottom: 4 },
+  heading: { fontSize: 18, fontWeight: "700", letterSpacing: -0.3, marginBottom: 4 },
 
   tabRow: { flexDirection: "row", gap: 8 },
   tabChip: {},

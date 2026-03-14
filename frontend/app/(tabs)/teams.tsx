@@ -400,8 +400,8 @@ function GridView({
 const styles = StyleSheet.create({
   container: { flex: 1 },
   scrollContent: { paddingBottom: 40 },
-  title: { fontSize: 22, fontWeight: "700", marginTop: 16, marginHorizontal: 16 },
-  subtitle: { fontSize: 13, marginHorizontal: 16, marginBottom: 4 },
+  title: { fontSize: 18, fontWeight: "700", marginTop: 12, marginHorizontal: 16 },
+  subtitle: { fontSize: 12, marginHorizontal: 16, marginBottom: 4, color: "#888" },
   controls: { marginHorizontal: 16, marginVertical: 10 },
 
   // Filters

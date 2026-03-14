@@ -8,11 +8,12 @@ export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
+        headerShown: false,
         tabBarActiveTintColor: theme.colors.primary,
         tabBarInactiveTintColor: theme.colors.onSurfaceVariant,
-        tabBarStyle: { backgroundColor: theme.colors.surface },
-        headerStyle: { backgroundColor: theme.colors.surface },
-        headerTintColor: theme.colors.onSurface,
+        tabBarStyle: { backgroundColor: theme.colors.surface, height: 56 },
+        tabBarLabelStyle: { fontSize: 10, marginBottom: 4 },
+        tabBarIconStyle: { marginTop: 2 },
       }}
     >
       {/* Hidden tabs */}
@@ -23,55 +24,54 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: "Dashboard",
+          title: "Home",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="home" size={size} color={color} />
+            <MaterialCommunityIcons name="home" size={size - 2} color={color} />
           ),
         }}
       />
-
       <Tabs.Screen
         name="roster"
         options={{
           title: "Roster",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="account-group" size={size} color={color} />
+            <MaterialCommunityIcons name="account-group" size={size - 2} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="calendar"
         options={{
-          title: "Calendar View",
+          title: "Calendar",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="calendar-today" size={size} color={color} />
+            <MaterialCommunityIcons name="calendar-today" size={size - 2} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="player-grid"
         options={{
-          title: "Player Game Grid",
+          title: "Grid",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="grid" size={size} color={color} />
+            <MaterialCommunityIcons name="grid" size={size - 2} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="teams"
         options={{
-          title: "Team Schedules",
+          title: "Teams",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="trophy-outline" size={size} color={color} />
+            <MaterialCommunityIcons name="trophy-outline" size={size - 2} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="compare"
         options={{
-          title: "Matchup Comparison",
+          title: "Compare",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="scale-balance" size={size} color={color} />
+            <MaterialCommunityIcons name="scale-balance" size={size - 2} color={color} />
           ),
         }}
       />
@@ -80,16 +80,16 @@ export default function TabLayout() {
         options={{
           title: "League",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="tournament" size={size} color={color} />
+            <MaterialCommunityIcons name="tournament" size={size - 2} color={color} />
           ),
         }}
       />
       <Tabs.Screen
         name="matchup"
         options={{
-          title: "H2H Matchup",
+          title: "H2H",
           tabBarIcon: ({ color, size }) => (
-            <MaterialCommunityIcons name="sword-cross" size={size} color={color} />
+            <MaterialCommunityIcons name="sword-cross" size={size - 2} color={color} />
           ),
         }}
       />

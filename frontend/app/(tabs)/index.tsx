@@ -298,7 +298,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 32, gap: 12 },
 
   headingRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 4 },
-  heading: { fontSize: 24, fontWeight: "800", letterSpacing: -0.5 },
+  heading: { fontSize: 18, fontWeight: "700", letterSpacing: -0.3 },
   cogBtn: { margin: 0 },
 
   rosterBadge: {
@@ -329,7 +329,7 @@ const styles = StyleSheet.create({
   },
   weekLabel: { fontSize: 15, fontWeight: "600", color: "#1a1a1a" },
   weekDates: { fontSize: 12, color: "#888", marginTop: 2 },
-  weekTotal: { fontSize: 22, fontWeight: "800", color: "#6750a4" },
+  weekTotal: { fontSize: 18, fontWeight: "800", color: "#6750a4" },
 
   rosterRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 18, paddingVertical: 12 },
   rosterRowBorder: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
