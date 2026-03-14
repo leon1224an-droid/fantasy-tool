@@ -138,25 +138,25 @@ function ActiveRoster() {
 
   const loadYahooMutation = useMutation({
     mutationFn: (team: LeagueTeamResponse) => loadYahooTeamToRoster(team.team_key),
-    onSuccess: (_data, team) => {
-      // Build roster directly from LeagueTeamResponse — same source Compare uses.
-      // Do NOT rely on backend response: SQLAlchemy identity-map can return stale
-      // is_il=False values even after the upsert commits correctly.
-      const directRoster: RosterPlayer[] = team.roster.map((p) => ({
-        name: p.name,
-        team: p.team,
-        positions: p.positions,
-        is_active: true,
-        is_il: p.is_il,
-      }));
-      queryClient.setQueryData(["roster"], directRoster);
+    onSuccess: (freshRoster, team) => {
+      // Backend now fetches live from Yahoo — use backend response directly.
+      queryClient.setQueryData(["roster"], freshRoster);
       queryClient.invalidateQueries({ queryKey: ["player-grid"] });
       queryClient.invalidateQueries({ queryKey: ["calendar"] });
       setShowYahooPicker(false);
       setLoadedRoster(null);
       setLoadedYahooTeamName(team.team_name);
-      // Broadcast to Compare + H2H tabs
-      setActiveTeam(team);
+      // Broadcast to Compare + H2H tabs with fresh is_il data from backend
+      const updatedTeam: LeagueTeamResponse = {
+        ...team,
+        roster: freshRoster.map((p) => ({
+          name: p.name,
+          team: p.team,
+          positions: p.positions,
+          is_il: p.is_il,
+        })),
+      };
+      setActiveTeam(updatedTeam);
     },
   });
 
