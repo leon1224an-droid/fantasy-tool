@@ -375,6 +375,17 @@ function ActiveRoster() {
         <Text style={styles.emptyText}>No players yet — add some above.</Text>
       )}
 
+      {/* Over-cap warning */}
+      {starterCount > 13 && (
+        <View style={styles.overCapBanner}>
+          <Text style={styles.overCapTitle}>⚠ Too many active players ({starterCount}/13)</Text>
+          <Text style={styles.overCapHint}>
+            Move {starterCount - 13} player{starterCount - 13 > 1 ? "s" : ""} to IL using the{" "}
+            <Text style={{ color: "#e65100" }}>🏥</Text> icon below to use the optimizer.
+          </Text>
+        </View>
+      )}
+
       {/* Starters */}
       {starters.map((player, idx) => (
         <RosterRow
@@ -861,6 +872,11 @@ const styles = StyleSheet.create({
   posChip: { height: 30 },
   posChipText: { fontSize: 12 },
   editActions: { flexDirection: "row", justifyContent: "flex-end", gap: 8 },
+
+  // Over-cap banner
+  overCapBanner: { margin: 12, marginTop: 4, padding: 12, backgroundColor: "#fff3e0", borderRadius: 10, borderLeftWidth: 3, borderLeftColor: "#e65100" },
+  overCapTitle: { fontSize: 13, fontWeight: "700", color: "#bf360c", marginBottom: 3 },
+  overCapHint: { fontSize: 12, color: "#7f3300", lineHeight: 17 },
 
   // IL section
   ilSectionHeader: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 8, backgroundColor: "#fff8f0", borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#f5cba7" },

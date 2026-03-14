@@ -679,8 +679,9 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
     # Deactivate current roster
     await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
 
-    # Upsert each player with their Yahoo positions and activate them
+    # Upsert each player — respect Yahoo's IL slot status
     for p_data in team.roster:
+        is_il = bool(p_data.get("is_il", False))
         stmt = (
             pg_insert(Player)
             .values(
@@ -688,11 +689,11 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
                 team=p_data["team"],
                 positions=p_data.get("positions", []),
                 is_active=True,
-                is_il=False,
+                is_il=is_il,
             )
             .on_conflict_do_update(
                 constraint="uq_players_name",
-                set_={"team": p_data["team"], "positions": p_data.get("positions", []), "is_active": True, "is_il": False},
+                set_={"team": p_data["team"], "positions": p_data.get("positions", []), "is_active": True, "is_il": is_il},
             )
         )
         await db.execute(stmt)
