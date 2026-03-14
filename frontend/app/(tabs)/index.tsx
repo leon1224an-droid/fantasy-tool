@@ -73,8 +73,12 @@ export default function DashboardScreen() {
 
   const bmMutation = useMutation({
     mutationFn: (file: File) => ingestBballMonster(file),
-    onSuccess: () => {
+    onSuccess: async () => {
+      await setActiveSource("bball_monster");
       queryClient.invalidateQueries({ queryKey: ["projections"] });
+      queryClient.invalidateQueries({ queryKey: ["projection-source"] });
+      queryClient.invalidateQueries({ queryKey: ["optimize"] });
+      queryClient.invalidateQueries({ queryKey: ["league-rankings"] });
     },
   });
 

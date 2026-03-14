@@ -85,6 +85,11 @@ export default function TeamsScreen() {
     return (row as Record<string, number>)[`w${w}`] ?? 0;
   };
 
+  const handleSetWeek = (w: WeekFilter) => {
+    if (w === "all") setMinGames(0);
+    setWeek(w);
+  };
+
   const toggleDate = (d: string) => setDateFilter((prev) => {
     const next = new Set(prev);
     next.has(d) ? next.delete(d) : next.add(d);
@@ -146,7 +151,7 @@ export default function TeamsScreen() {
             <Text style={styles.filterLabel}>Week</Text>
             <View style={styles.chipRow}>
               {(["all", "21", "22", "23"] as WeekFilter[]).map((w) => (
-                <Chip key={w} selected={week === w} onPress={() => setWeek(w)} compact showSelectedOverlay style={styles.chip} textStyle={styles.chipText}>
+                <Chip key={w} selected={week === w} onPress={() => handleSetWeek(w)} compact showSelectedOverlay style={styles.chip} textStyle={styles.chipText}>
                   {w === "all" ? "All" : `Wk ${w}`}
                 </Chip>
               ))}
@@ -154,17 +159,19 @@ export default function TeamsScreen() {
           </View>
         )}
 
-        {/* Min games */}
-        <View style={styles.filterGroup}>
-          <Text style={styles.filterLabel}>Min games{viewMode === "summary" && week !== "all" ? ` (Wk ${week})` : ""}</Text>
-          <View style={styles.chipRow}>
-            {[0, 2, 3, 4].map((n) => (
-              <Chip key={n} selected={minGames === n} onPress={() => setMinGames(n)} compact showSelectedOverlay style={styles.chip} textStyle={styles.chipText}>
-                {n === 0 ? "Any" : `${n}+`}
-              </Chip>
-            ))}
+        {/* Min games — only meaningful on a per-week basis */}
+        {week !== "all" && (
+          <View style={styles.filterGroup}>
+            <Text style={styles.filterLabel}>Min games (Wk {week})</Text>
+            <View style={styles.chipRow}>
+              {[0, 2, 3, 4].map((n) => (
+                <Chip key={n} selected={minGames === n} onPress={() => setMinGames(n)} compact showSelectedOverlay style={styles.chip} textStyle={styles.chipText}>
+                  {n === 0 ? "Any" : `${n}+`}
+                </Chip>
+              ))}
+            </View>
           </View>
-        </View>
+        )}
 
         {/* Must play on — specific dates grouped by week */}
         {allDates.length > 0 && (
@@ -220,7 +227,7 @@ export default function TeamsScreen() {
               teamDayMap={teamDayMap}
               dates={gridDates}
               week={week}
-              setWeek={setWeek}
+              setWeek={handleSetWeek}
             />
           )}
         </>
