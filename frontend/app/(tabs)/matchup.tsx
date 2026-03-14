@@ -57,8 +57,11 @@ export default function MatchupScreen() {
     enabled: canFetch,
   });
 
-  const handleSelectA = (key: string) => { setTeamA(key); setIlA(new Set()); setMenuA(false); };
-  const handleSelectB = (key: string) => { setTeamB(key); setIlB(new Set()); setMenuB(false); };
+  const yahooIL = (key: string): Set<string> =>
+    new Set(teams?.find((t) => t.team_key === key)?.roster.filter((p) => p.is_il).map((p) => p.name) ?? []);
+
+  const handleSelectA = (key: string) => { setTeamA(key); setIlA(yahooIL(key)); setMenuA(false); };
+  const handleSelectB = (key: string) => { setTeamB(key); setIlB(yahooIL(key)); setMenuB(false); };
 
   const activeTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
   const activeIl = lineupModal === "a" ? ilA : ilB;
@@ -90,7 +93,7 @@ export default function MatchupScreen() {
               <IconButton icon="close" size={20} onPress={() => setLineupModal(null)} style={styles.modalClose} />
             </View>
             <Text style={styles.modalSub}>
-              Toggle players to IL to exclude them from the matchup calculation.
+              Yahoo IL players are pre-marked. Toggle to adjust who counts in the projection.
               Top 13 active players by projected value are used.
             </Text>
             <Divider style={styles.modalDivider} />
