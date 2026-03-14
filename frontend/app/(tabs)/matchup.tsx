@@ -1,8 +1,9 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import { Modal, ScrollView, StyleSheet, View } from "react-native";
 import { Chip, Divider, IconButton, Menu, Button, Surface, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
 import { getLeagueTeams, getLeagueMatchup, MatchupResult, LeagueTeamResponse } from "../../lib/api";
+import { useActiveTeam } from "../../lib/activeTeamContext";
 
 const WEEKS = [21, 22, 23] as const;
 
@@ -25,6 +26,7 @@ function fmt(val: number, cat: string): string {
 
 export default function MatchupScreen() {
   const theme = useTheme();
+  const { activeTeam } = useActiveTeam();
   const [week, setWeek] = useState<number>(21);
   const [teamA, setTeamA] = useState<string | null>(null);
   const [teamB, setTeamB] = useState<string | null>(null);
@@ -62,6 +64,12 @@ export default function MatchupScreen() {
 
   const handleSelectA = (key: string) => { setTeamA(key); setIlA(yahooIL(key)); setMenuA(false); };
   const handleSelectB = (key: string) => { setTeamB(key); setIlB(yahooIL(key)); setMenuB(false); };
+
+  // When a team is loaded in the Roster tab, auto-select it as Team A
+  useEffect(() => {
+    if (!activeTeam || !teams) return;
+    handleSelectA(activeTeam.team_key);
+  }, [activeTeam?.team_key, teams]);
 
   const activeTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
   const activeIl = lineupModal === "a" ? ilA : ilB;
@@ -122,8 +130,12 @@ export default function MatchupScreen() {
               })}
             </ScrollView>
             <View style={styles.modalFooter}>
-              <Text style={styles.modalCount}>
-                {(activeTeam?.roster.length ?? 0) - activeIl.size} active
+              <Text style={[
+                styles.modalCount,
+                (activeTeam?.roster.length ?? 0) - activeIl.size > 13 && { color: "#c62828" },
+              ]}>
+                {(activeTeam?.roster.length ?? 0) - activeIl.size} active{" "}
+                {(activeTeam?.roster.length ?? 0) - activeIl.size > 13 ? `(need ${((activeTeam?.roster.length ?? 0) - activeIl.size) - 13} more IL)` : "✓"}
                 {activeIl.size > 0 ? ` · ${activeIl.size} IL` : ""}
               </Text>
               <Button mode="contained" onPress={() => setLineupModal(null)} style={styles.modalDone}>
@@ -225,6 +237,30 @@ export default function MatchupScreen() {
         {teamA === teamB && teamA !== null && (
           <Text style={styles.errorText}>Select two different teams.</Text>
         )}
+
+        {/* Over-cap warnings */}
+        {teamA && (() => {
+          const count = (teamData(teamA)?.roster.length ?? 0) - ilA.size;
+          return count > 13 ? (
+            <View style={styles.overCapBanner}>
+              <Text style={styles.overCapTitle}>⚠ Team A: {count} active players — max 13</Text>
+              <Text style={styles.overCapHint}>
+                Tap "Edit lineup" under Team A and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
+              </Text>
+            </View>
+          ) : null;
+        })()}
+        {teamB && (() => {
+          const count = (teamData(teamB)?.roster.length ?? 0) - ilB.size;
+          return count > 13 ? (
+            <View style={styles.overCapBanner}>
+              <Text style={styles.overCapTitle}>⚠ Team B: {count} active players — max 13</Text>
+              <Text style={styles.overCapHint}>
+                Tap "Edit lineup" under Team B and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
+              </Text>
+            </View>
+          ) : null;
+        })()}
 
         {isLoading && <Text style={styles.hint}>Loading matchup…</Text>}
         {error && <Text style={styles.errorText}>{(error as Error).message}</Text>}
@@ -338,6 +374,9 @@ const styles = StyleSheet.create({
 
   hint: { color: "#888", textAlign: "center", fontSize: 13 },
   errorText: { color: "#c62828", textAlign: "center", fontSize: 13 },
+  overCapBanner: { padding: 12, backgroundColor: "#fff3e0", borderRadius: 10, borderLeftWidth: 3, borderLeftColor: "#e65100" },
+  overCapTitle: { fontSize: 13, fontWeight: "700", color: "#bf360c", marginBottom: 3 },
+  overCapHint: { fontSize: 12, color: "#7f3300", lineHeight: 17 },
 
   // Lineup modal
   modalOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },

@@ -2,7 +2,7 @@
  * Compare two rosters side-by-side by playable starts per week.
  * Uses the /simulate-schedule endpoint to account for position constraints.
  */
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
 import {
   ActivityIndicator,
@@ -17,6 +17,7 @@ import {
   useTheme,
 } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
+import { useActiveTeam } from "../../lib/activeTeamContext";
 import {
   getRoster,
   getSavedRosters,
@@ -44,6 +45,7 @@ interface ComparePlayer {
 // ---------------------------------------------------------------------------
 export default function CompareScreen() {
   const theme = useTheme();
+  const { activeTeam } = useActiveTeam();
 
   const [rosterA, setRosterA] = useState<ComparePlayer[]>([]);
   const [rosterB, setRosterB] = useState<ComparePlayer[]>([]);
@@ -52,6 +54,13 @@ export default function CompareScreen() {
   // IL sets: player names excluded from each side's simulation
   const [ilA, setIlA] = useState<Set<string>>(new Set());
   const [ilB, setIlB] = useState<Set<string>>(new Set());
+
+  // When a team is loaded in the Roster tab, auto-populate Roster A
+  useEffect(() => {
+    if (!activeTeam) return;
+    setRosterA(activeTeam.roster.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
+    setIlA(new Set(activeTeam.roster.filter((p) => p.is_il).map((p) => p.name)));
+  }, [activeTeam?.team_key]);
 
   // Active (non-IL) rosters, capped at 13
   const activeA = useMemo(
@@ -366,6 +375,16 @@ function RosterPanel({
         onToggleIl={onToggleIl}
         onClose={() => setShowIlModal(false)}
       />
+
+      {/* Over-cap warning */}
+      {overCap && (
+        <View style={styles.overCapBanner}>
+          <Text style={styles.overCapTitle}>⚠ {activeCount} active players — max {ROSTER_CAP}</Text>
+          <Text style={styles.overCapHint}>
+            Open the lineup editor (clipboard icon) and move {activeCount - ROSTER_CAP} player{activeCount - ROSTER_CAP > 1 ? "s" : ""} to IL so exactly {ROSTER_CAP} are active.
+          </Text>
+        </View>
+      )}
 
       {/* Empty state */}
       {players.length === 0 && !showAdd && (
@@ -748,6 +767,9 @@ const styles = StyleSheet.create({
 
   rosterCountText: { fontSize: 11, color: "#888" },
   rosterCountWarn: { color: "#e65100", fontWeight: "700" },
+  overCapBanner: { margin: 12, marginTop: 4, padding: 12, backgroundColor: "#fff3e0", borderRadius: 10, borderLeftWidth: 3, borderLeftColor: "#e65100" },
+  overCapTitle: { fontSize: 13, fontWeight: "700", color: "#bf360c", marginBottom: 3 },
+  overCapHint: { fontSize: 12, color: "#7f3300", lineHeight: 17 },
 
   playerRow: { flexDirection: "row", alignItems: "center", paddingLeft: 14, paddingRight: 4, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0" },
   playerRowDimmed: { opacity: 0.45 },

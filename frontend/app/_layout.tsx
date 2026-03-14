@@ -3,6 +3,7 @@ import { PaperProvider, MD3DarkTheme, MD3LightTheme } from "react-native-paper";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useColorScheme } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { ActiveTeamProvider } from "../lib/activeTeamContext";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -20,9 +21,11 @@ export default function RootLayout() {
   return (
     <SafeAreaProvider>
       <QueryClientProvider client={queryClient}>
-        <PaperProvider theme={theme}>
-          <Stack screenOptions={{ headerShown: false }} />
-        </PaperProvider>
+        <ActiveTeamProvider>
+          <PaperProvider theme={theme}>
+            <Stack screenOptions={{ headerShown: false }} />
+          </PaperProvider>
+        </ActiveTeamProvider>
       </QueryClientProvider>
     </SafeAreaProvider>
   );

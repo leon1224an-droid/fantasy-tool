@@ -13,6 +13,7 @@ import {
   useTheme,
 } from "react-native-paper";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useActiveTeam } from "../../lib/activeTeamContext";
 import {
   getRoster,
   searchPlayers,
@@ -85,6 +86,7 @@ export default function RosterScreen() {
 function ActiveRoster() {
   const theme = useTheme();
   const queryClient = useQueryClient();
+  const { setActiveTeam } = useActiveTeam();
   const [saving, setSaving] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [showLoadPicker, setShowLoadPicker] = useState(false);
@@ -144,6 +146,8 @@ function ActiveRoster() {
       setShowYahooPicker(false);
       setLoadedRoster(null);
       setLoadedYahooTeamName(team.team_name);
+      // Broadcast to Compare + H2H tabs
+      setActiveTeam(team);
     },
   });
 
