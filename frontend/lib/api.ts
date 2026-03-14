@@ -426,10 +426,14 @@ export function getLeagueRankings(week: number): Promise<TeamRankingResponse[]> 
   return apiFetch<TeamRankingResponse[]>(`/league/rankings?week=${week}`);
 }
 
-export function getLeagueMatchup(teamA: string, teamB: string, week: number): Promise<MatchupResult> {
-  return apiFetch<MatchupResult>(
-    `/league/matchup?team_a=${encodeURIComponent(teamA)}&team_b=${encodeURIComponent(teamB)}&week=${week}`
-  );
+export function getLeagueMatchup(
+  teamA: string, teamB: string, week: number,
+  excludeA: string[] = [], excludeB: string[] = [],
+): Promise<MatchupResult> {
+  const params = new URLSearchParams({ team_a: teamA, team_b: teamB, week: String(week) });
+  if (excludeA.length) params.set("exclude_a", excludeA.join(","));
+  if (excludeB.length) params.set("exclude_b", excludeB.join(","));
+  return apiFetch<MatchupResult>(`/league/matchup?${params}`);
 }
 
 export interface ScheduledMatchup {

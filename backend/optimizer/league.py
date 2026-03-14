@@ -49,12 +49,19 @@ class MatchupResult:
 # Team projection computation
 # ---------------------------------------------------------------------------
 
-async def compute_team_projections(db: AsyncSession, week_num: int) -> list[TeamProjection]:
+async def compute_team_projections(
+    db: AsyncSession,
+    week_num: int,
+    exclude: dict[str, set[str]] | None = None,
+    max_players: int = 13,
+) -> list[TeamProjection]:
     """
     For each Yahoo league team, sum projected stat totals for the week
     using the active projection source.
 
-    FG%/FT% are computed as weighted averages using fg_att_pg/ft_att_pg as weights.
+    - Players in `exclude[team_key]` are treated as IL and skipped.
+    - After exclusions, only the top `max_players` (by projected_total) contribute.
+    - FG%/FT% are computed as weighted averages using fg_att_pg/ft_att_pg as weights.
     """
     active_source = await get_active_source(db)
 
@@ -62,7 +69,6 @@ async def compute_team_projections(db: AsyncSession, week_num: int) -> list[Team
     if not teams:
         return []
 
-    # Build projection lookup: player_name → PlayerProjection
     proj_rows = (
         await db.execute(
             select(Player, PlayerProjection)
@@ -81,22 +87,30 @@ async def compute_team_projections(db: AsyncSession, week_num: int) -> list[Team
     results: list[TeamProjection] = []
 
     for team in teams:
+        team_exclude: set[str] = (exclude or {}).get(team.team_key, set())
+
+        # Collect eligible players (have a projection, not on IL)
+        eligible: list[PlayerProjection] = []
+        for entry in (team.roster or []):
+            pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
+            if not pname or pname in team_exclude:
+                continue
+            proj = proj_lookup.get(pname)
+            if proj:
+                eligible.append(proj)
+
+        # Sort by projected value descending, cap at max_players
+        eligible.sort(key=lambda p: p.fantasy_ppg * p.games_count, reverse=True)
+        active = eligible[:max_players]
+
         acc: dict[str, float] = {
             "pts": 0.0, "reb": 0.0, "ast": 0.0, "stl": 0.0, "blk": 0.0,
             "tov": 0.0, "tpm": 0.0,
-            # Accumulators for weighted pct
             "_fg_made": 0.0, "_fg_att": 0.0,
             "_ft_made": 0.0, "_ft_att": 0.0,
         }
 
-        for entry in (team.roster or []):
-            pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
-            if not pname:
-                continue
-            proj = proj_lookup.get(pname)
-            if not proj:
-                continue
-
+        for proj in active:
             g = proj.games_count
             acc["pts"]  += proj.pts_pg * g
             acc["reb"]  += proj.reb_pg * g
@@ -121,12 +135,7 @@ async def compute_team_projections(db: AsyncSession, week_num: int) -> list[Team
             acc["_ft_made"] / acc["_ft_att"] if acc["_ft_att"] > 0 else 0.0, 4
         )
 
-        total_games = sum(
-            proj_lookup[pname].games_count
-            for entry in (team.roster or [])
-            if (pname := (entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)))
-            and pname in proj_lookup
-        )
+        total_games = sum(p.games_count for p in active)
 
         results.append(TeamProjection(
             team_key=team.team_key,

@@ -172,10 +172,18 @@ async def get_matchup(
     team_a: str = Query(..., description="team_key of team A"),
     team_b: str = Query(..., description="team_key of team B"),
     week: int = Query(default=21, ge=21, le=23),
+    exclude_a: str = Query(default="", description="Comma-separated player names to IL for team A"),
+    exclude_b: str = Query(default="", description="Comma-separated player names to IL for team B"),
     db: AsyncSession = Depends(get_db),
 ):
     """Head-to-head category breakdown between two teams for a given week."""
-    projections = await compute_team_projections(db, week)
+    exclude: dict[str, set[str]] = {}
+    if exclude_a:
+        exclude[team_a] = set(n.strip() for n in exclude_a.split(",") if n.strip())
+    if exclude_b:
+        exclude[team_b] = set(n.strip() for n in exclude_b.split(",") if n.strip())
+
+    projections = await compute_team_projections(db, week, exclude=exclude)
 
     proj_map: dict[str, TeamProjection] = {p.team_key: p for p in projections}
 
