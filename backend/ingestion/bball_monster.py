@@ -1,9 +1,14 @@
 """
-Basketball Monster CSV import.
+Basketball Monster / NBA-stats-style CSV import.
 
-Expected CSV columns (flexible naming):
-  Player/Name, Team, Pos/Position, GP, MPG,
-  FG%, FGA, FT%, FTA, 3PM/3P, PTS, REB/TRB, AST, STL, BLK, TO/TOV
+Supports two formats:
+  Format A (classic BM):
+    Player/Name, Team, Pos, GP, PTS, REB/TRB, AST, STL, BLK, TO/TOV, 3PM, FG%, FGA, FT%, FTA
+
+  Format B (totals export, e.g. nba.com/stats style):
+    first_name, last_name, games, field_goals, field_goals_attempted,
+    free_throws, free_throws_attempted, threes, threes_attempted,
+    offensive_rebounds, defensive_rebounds, assists, blocks, steals, tov
 
 Usage:
   POST /ingest/bball-monster  multipart/form-data  file=<CSV>
@@ -18,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import Player, PlayerProjection, TeamSchedule
-from .projections import SCORING, compute_fantasy_ppg
+from .projections import compute_fantasy_ppg
 
 # ---------------------------------------------------------------------------
 # Column name normalisation
@@ -31,25 +36,52 @@ _COL_ALIASES: dict[str, str] = {
     "pos": "position",
     # rebounds
     "trb": "reb",
+    "total_rebounds": "reb",
     # turnovers
     "to": "tov",
     "turnovers": "tov",
-    # 3-pointers
+    # 3-pointers made
     "3p": "tpm",
     "3pm": "tpm",
     "3-pm": "tpm",
+    "threes": "tpm",
+    # 3-pointers attempted
+    "threes_attempted": "fg3_att",
+    "3pa": "fg3_att",
+    # field goals made
+    "field_goals": "fgm",
+    "fg": "fgm",
     # field goal attempts
     "fga": "fg_att",
+    "field_goals_attempted": "fg_att",
+    # free throws made
+    "free_throws": "ftm",
+    "ft": "ftm",
     # free throw attempts
     "fta": "ft_att",
+    "free_throws_attempted": "ft_att",
+    # rebounds breakdown
+    "offensive_rebounds": "oreb",
+    "orb": "oreb",
+    "defensive_rebounds": "dreb",
+    "drb": "dreb",
+    # assists / blocks / steals
+    "assists": "ast",
+    "blocks": "blk",
+    "steals": "stl",
     # percentages
     "fg%": "fg_pct",
     "ft%": "ft_pct",
+    # games played
+    "gp": "games",
+    "g": "games",
+    # minutes
+    "mpg": "minutes",
+    "mp": "minutes",
 }
 
 
 def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Lowercase + strip column names and apply known aliases."""
     df.columns = [c.strip().lower() for c in df.columns]
     df = df.rename(columns=_COL_ALIASES)
     return df
@@ -68,14 +100,12 @@ def _safe_float(val: Any) -> float:
 
 
 def _parse_positions(pos_str: str) -> list[str]:
-    """Convert 'PG/SG' or 'PG,SG' or 'Guard' etc. to list of fantasy positions."""
     from .projections import map_nba_position
 
     if not pos_str or pd.isna(pos_str):
         return ["SF", "PF"]
 
     pos_str = str(pos_str).strip()
-    # Split on / or ,
     parts = [p.strip().upper() for p in pos_str.replace(",", "/").split("/")]
 
     fantasy = set()
@@ -83,7 +113,6 @@ def _parse_positions(pos_str: str) -> list[str]:
         if part in ("PG", "SG", "SF", "PF", "C"):
             fantasy.add(part)
         else:
-            # Try NBA position map
             mapped = map_nba_position(part.title())
             fantasy.update(mapped)
 
@@ -94,10 +123,6 @@ def _parse_positions(pos_str: str) -> list[str]:
 # Main ingestion function
 # ---------------------------------------------------------------------------
 async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
-    """
-    Parse a Basketball Monster CSV export and upsert PlayerProjection rows
-    with source='bball_monster' for each playoff week.
-    """
     try:
         df = pd.read_csv(io.BytesIO(csv_bytes))
     except Exception as exc:
@@ -105,17 +130,35 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
 
     df = _normalize_columns(df)
 
+    # ---- Resolve player name ----
+    # Format A: single 'name' column
+    # Format B: separate 'first_name' + 'last_name' columns
     if "name" not in df.columns:
-        raise ValueError(
-            "CSV must contain a 'Player' or 'Name' column. "
-            f"Found columns: {list(df.columns)}"
-        )
+        if "first_name" in df.columns and "last_name" in df.columns:
+            df["name"] = (
+                df["first_name"].fillna("").str.strip()
+                + " "
+                + df["last_name"].fillna("").str.strip()
+            ).str.strip()
+        else:
+            raise ValueError(
+                "CSV must contain a 'Player'/'Name' column or both 'first_name' and "
+                f"'last_name' columns. Found: {list(df.columns)}"
+            )
 
-    # Load schedule for games_count lookup
+    # Load schedule and existing players for lookups
     schedule_rows = (await db.execute(select(TeamSchedule))).scalars().all()
     games_lookup: dict[tuple[str, int], int] = {
         (row.team, row.week_num): row.games_count for row in schedule_rows
     }
+
+    existing_players: dict[str, Player] = {
+        p.name: p
+        for p in (await db.execute(select(Player))).scalars().all()
+    }
+
+    # Determine if stats are totals (has 'games' column) or already per-game
+    has_totals = "games" in df.columns
 
     upserted = 0
     skipped = 0
@@ -126,33 +169,85 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
             skipped += 1
             continue
 
-        team = str(row.get("team", "")).strip().upper()
-        pos_raw = row.get("position", row.get("pos", ""))
-        positions = _parse_positions(str(pos_raw))
+        gp = max(_safe_float(row.get("games", 1)), 1) if has_totals else 1
+
+        # ---- Per-game stats ----
+        # pts: use pts column if present, else derive from FGM/3PM/FTM totals
+        if "pts" in df.columns:
+            pts_pg = _safe_float(row.get("pts", 0)) / gp if has_totals else _safe_float(row.get("pts", 0))
+        else:
+            fgm = _safe_float(row.get("fgm", 0))
+            tpm = _safe_float(row.get("tpm", 0))
+            ftm = _safe_float(row.get("ftm", 0))
+            pts_total = fgm * 2 + tpm + ftm  # (FGM−3PM)×2 + 3PM×3 + FTM = 2×FGM + 3PM + FTM
+            pts_pg = pts_total / gp if has_totals else pts_total
+
+        def _pg(col: str) -> float:
+            v = _safe_float(row.get(col, 0))
+            return v / gp if has_totals else v
+
+        # reb: prefer 'reb' column, else sum oreb + dreb
+        if "reb" in df.columns:
+            reb_pg = _pg("reb")
+        else:
+            reb_pg = (_pg("oreb") + _pg("dreb"))
+
+        # fg_att / ft_att
+        fg_att_pg = _pg("fg_att")
+        ft_att_pg = _pg("ft_att")
+
+        # fg_pct / ft_pct — prefer direct columns, else derive from made/att
+        if "fg_pct" in df.columns:
+            fg_pct = _safe_float(row.get("fg_pct", 0))
+            if fg_pct > 1.0:
+                fg_pct /= 100.0
+        elif fg_att_pg > 0:
+            fgm_pg = _pg("fgm") if "fgm" in df.columns else pts_pg / 2  # rough fallback
+            fg_pct = min(fgm_pg / fg_att_pg, 1.0) if fg_att_pg > 0 else 0.0
+        else:
+            fg_pct = 0.0
+
+        if "ft_pct" in df.columns:
+            ft_pct = _safe_float(row.get("ft_pct", 0))
+            if ft_pct > 1.0:
+                ft_pct /= 100.0
+        elif ft_att_pg > 0:
+            ftm_pg = _pg("ftm") if "ftm" in df.columns else 0.0
+            ft_pct = min(ftm_pg / ft_att_pg, 1.0) if ft_att_pg > 0 else 0.0
+        else:
+            ft_pct = 0.0
 
         stats: dict[str, float] = {
-            "pts":       _safe_float(row.get("pts", 0)),
-            "reb":       _safe_float(row.get("reb", 0)),
-            "ast":       _safe_float(row.get("ast", 0)),
-            "stl":       _safe_float(row.get("stl", 0)),
-            "blk":       _safe_float(row.get("blk", 0)),
-            "tov":       _safe_float(row.get("tov", 0)),
-            "tpm":       _safe_float(row.get("tpm", 0)),
-            "fg_pct":    _safe_float(row.get("fg_pct", 0)),
-            "ft_pct":    _safe_float(row.get("ft_pct", 0)),
-            "fg_att_pg": _safe_float(row.get("fg_att", 0)),
-            "ft_att_pg": _safe_float(row.get("ft_att", 0)),
+            "pts":       round(pts_pg, 3),
+            "reb":       round(reb_pg, 3),
+            "ast":       round(_pg("ast"), 3),
+            "stl":       round(_pg("stl"), 3),
+            "blk":       round(_pg("blk"), 3),
+            "tov":       round(_pg("tov"), 3),
+            "tpm":       round(_pg("tpm"), 3),
+            "fg_pct":    round(fg_pct, 4),
+            "ft_pct":    round(ft_pct, 4),
+            "fg_att_pg": round(fg_att_pg, 3),
+            "ft_att_pg": round(ft_att_pg, 3),
         }
-
-        # fg_pct may be stored as 0-100 in some exports — normalise to 0-1
-        if stats["fg_pct"] > 1.0:
-            stats["fg_pct"] /= 100.0
-        if stats["ft_pct"] > 1.0:
-            stats["ft_pct"] /= 100.0
 
         fantasy_ppg = round(compute_fantasy_ppg(stats), 3)
 
-        # Upsert player row
+        # ---- Team: CSV column first, fall back to existing DB record ----
+        csv_team = str(row.get("team", "")).strip().upper()
+        existing = existing_players.get(pname)
+        team = csv_team if csv_team and csv_team != "NAN" else (existing.team if existing else "")
+
+        # ---- Position: CSV first, fall back to existing DB record ----
+        pos_raw = row.get("position", row.get("pos", ""))
+        if pos_raw and str(pos_raw).strip() and str(pos_raw).lower() != "nan":
+            positions = _parse_positions(str(pos_raw))
+        elif existing:
+            positions = existing.positions
+        else:
+            positions = ["SF", "PF"]
+
+        # Upsert player (preserve is_active flag for existing players)
         p_stmt = (
             insert(Player)
             .values(name=pname, team=team, positions=positions, is_active=False)
