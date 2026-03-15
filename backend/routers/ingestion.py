@@ -4,13 +4,25 @@ Extended ingestion endpoints:
   POST /ingest/yahoo-league    — fetch Yahoo Fantasy league data
 """
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..database import get_db
+from ..database import AsyncSessionLocal, get_db
 from ..ingestion.bball_monster import ingest_bball_monster_csv
 from ..ingestion.yahoo import ingest_yahoo_league
+
+
+async def _bg_player_directory() -> None:
+    """Background task: populate team+position for all active NBA players via PlayerIndex.
+    Runs after the Yahoo sync response is already sent, so no timeout risk."""
+    from ..ingestion.projections import ingest_player_directory
+    async with AsyncSessionLocal() as db:
+        try:
+            n = await ingest_player_directory(db)
+            print(f"[bg] Player directory done: {n} players.")
+        except Exception as exc:
+            print(f"[bg] Player directory failed: {exc}")
 
 router = APIRouter(prefix="/ingest", tags=["ingestion"])
 
@@ -56,13 +68,17 @@ async def ingest_bball_monster(
 
 
 @router.post("/yahoo-league", response_model=YahooIngestResponse)
-async def ingest_yahoo(db: AsyncSession = Depends(get_db)):
+async def ingest_yahoo(background_tasks: BackgroundTasks, db: AsyncSession = Depends(get_db)):
     """
     Fetch all Yahoo Fantasy teams, rosters, and season-average stats.
     Requires YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET, YAHOO_REFRESH_TOKEN,
     YAHOO_LEAGUE_ID to be set in the environment.
+
+    After responding, fires a background task to populate team+position data for
+    all active NBA players so any player can be found in Add Player lookups.
     """
     result = await ingest_yahoo_league(db)
+    background_tasks.add_task(_bg_player_directory)
     return YahooIngestResponse(
         status="ok",
         teams_upserted=result["teams_upserted"],
