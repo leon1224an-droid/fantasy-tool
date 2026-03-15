@@ -127,50 +127,47 @@ async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[st
 # Seed helpers
 # ---------------------------------------------------------------------------
 async def ingest_player_directory(db: AsyncSession, season: str | None = None) -> int:
-    """Fetch all active NBA players (team + position) from PlayerIndex and upsert into
-    the players table as inactive rows.  This ensures that any active NBA player can
-    be found by the DB-first /players/info lookup, not just Yahoo-rostered ones.
+    """Cache team for every active NBA player using LeagueDashPlayerStats.
 
-    Only updates `team` and `positions` on conflict — does NOT touch is_active / is_il
-    so existing roster state is preserved.
+    Uses the same endpoint as ingest_projections (known to work) to get
+    PLAYER_NAME + TEAM_ABBREVIATION for all ~500 active players and upsert
+    them as inactive rows.  Only team/positions are overwritten on conflict so
+    existing roster state (is_active, is_il) is preserved.
+
+    Intended to be called as a background task — no timeout limit.
     """
-    from nba_api.stats.endpoints import playerindex as pi_module
-
     season = season or os.getenv("NBA_SEASON", "2025-26")
 
     def _fetch() -> list[dict]:
-        endpoint = pi_module.PlayerIndex(season=season, timeout=30)
+        endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
+            season=season,
+            per_mode_detailed="PerGame",
+            timeout=60,
+        )
         df = endpoint.get_data_frames()[0]
         rows = []
         for _, row in df.iterrows():
-            first = str(row.get("PLAYER_FIRST_NAME") or "").strip()
-            last  = str(row.get("PLAYER_LAST_NAME")  or "").strip()
-            name  = f"{first} {last}".strip()
-            team  = str(row.get("TEAM_ABBREVIATION") or "").upper().strip()
-            pos   = str(row.get("POSITION")          or "").strip()
+            name = str(row.get("PLAYER_NAME") or "").strip()
+            team = str(row.get("TEAM_ABBREVIATION") or "").upper().strip()
             if not name or not team:
                 continue
-            rows.append({"name": name, "team": team, "position": pos})
+            rows.append({"name": name, "team": team})
         return rows
 
     try:
-        players = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, _fetch),
-            timeout=25,
-        )
+        players = await asyncio.get_event_loop().run_in_executor(None, _fetch)
     except Exception as exc:
-        print(f"[player_directory] WARNING — failed to fetch: {exc}")
+        print(f"[player_directory] WARNING — LeagueDashPlayerStats failed: {exc}")
         return 0
 
     count = 0
     for p in players:
-        positions = map_nba_position(p["position"])
         stmt = (
             insert(Player)
-            .values(name=p["name"], team=p["team"], positions=positions, is_active=False, is_il=False)
+            .values(name=p["name"], team=p["team"], positions=["SF", "PF"], is_active=False, is_il=False)
             .on_conflict_do_update(
                 constraint="uq_players_name",
-                set_={"team": p["team"], "positions": positions},
+                set_={"team": p["team"]},
             )
         )
         await db.execute(stmt)
