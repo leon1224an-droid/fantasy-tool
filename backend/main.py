@@ -319,9 +319,11 @@ async def run_ingest_projections(db: AsyncSession = Depends(get_db)):
 
 @app.post("/ingest/all", response_model=IngestScheduleResponse, tags=["ingestion"])
 async def run_ingest_all(db: AsyncSession = Depends(get_db)):
-    """Run schedule then projections ingestion in one request."""
+    """Run schedule ingestion only (fast).
+    NBA Stats projections are intentionally excluded — they hit a slow external API
+    that causes Railway HTTP timeouts. Use POST /ingest/projections explicitly if needed.
+    """
     schedule = await ingest_schedule(db)
-    await ingest_projections(db)
     return IngestScheduleResponse(
         status="ok",
         schedule={str(k): v for k, v in schedule.items()},
@@ -594,10 +596,11 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             positions=db_player.positions,
         )
 
-    # Fall back to external NBA Stats API (slow — only for players not in DB)
+    # Fall back to external NBA Stats API — only for players not yet in DB.
+    # Use a short timeout so Railway doesn't hang; if it fails, raise a clear error.
     from nba_api.stats.endpoints import commonplayerinfo
     def _fetch():
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=30)
+        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=8)
         df = info.get_data_frames()[0]
         row = df.iloc[0]
         return {
@@ -606,7 +609,21 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             "nba_position": str(row.get("POSITION", "F")),
         }
 
-    data = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+    try:
+        data = await asyncio.wait_for(
+            asyncio.get_event_loop().run_in_executor(None, _fetch),
+            timeout=10,
+        )
+    except (asyncio.TimeoutError, Exception) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Player '{player_name}' is not in the local database and the NBA Stats API "
+                f"did not respond in time. Sync Yahoo league data first (Dashboard → Sync All), "
+                f"then try again."
+            ),
+        ) from exc
+
     team = normalize_team_abbr(data["team"])
     positions = map_nba_position(data["nba_position"])
 
