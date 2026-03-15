@@ -614,15 +614,16 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             asyncio.get_event_loop().run_in_executor(None, _fetch),
             timeout=10,
         )
-    except (asyncio.TimeoutError, Exception) as exc:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                f"Player '{player_name}' is not in the local database and the NBA Stats API "
-                f"did not respond in time. Sync Yahoo league data first (Dashboard → Sync All), "
-                f"then try again."
-            ),
-        ) from exc
+    except (asyncio.TimeoutError, Exception):
+        # External API unavailable — return what we know so the user can still add
+        # the player and set positions manually via the roster position editor.
+        return NBAPlayerInfo(
+            player_id=player_id,
+            name=player_name,
+            team="",
+            nba_position="",
+            positions=["SF", "PF"],
+        )
 
     team = normalize_team_abbr(data["team"])
     positions = map_nba_position(data["nba_position"])

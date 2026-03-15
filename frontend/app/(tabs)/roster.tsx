@@ -766,7 +766,7 @@ function PlayerSearch({ onAdded }: { onAdded: () => void }) {
             <Text style={[styles.confirmName, { color: theme.colors.onSurface }]}>{selectedResult?.name}</Text>
             {playerInfo && (
               <Text style={[styles.confirmMeta, { color: theme.colors.onSurfaceVariant }]}>
-                {playerInfo.team} · {playerInfo.nba_position}
+                {playerInfo.team || "⚠ Team unknown — update after adding"} · {playerInfo.nba_position || "set positions below"}
               </Text>
             )}
           </View>
