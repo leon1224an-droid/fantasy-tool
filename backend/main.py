@@ -596,44 +596,40 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             positions=db_player.positions,
         )
 
-    # Fall back to external NBA Stats API — only for players not yet in DB.
-    # Use a short timeout so Railway doesn't hang; if it fails, raise a clear error.
-    from nba_api.stats.endpoints import commonplayerinfo
-    def _fetch():
-        info = commonplayerinfo.CommonPlayerInfo(player_id=player_id, timeout=8)
-        df = info.get_data_frames()[0]
-        row = df.iloc[0]
-        return {
-            "name": str(row.get("DISPLAY_FIRST_LAST", "")),
-            "team": str(row.get("TEAM_ABBREVIATION", "")),
-            "nba_position": str(row.get("POSITION", "F")),
-        }
-
-    try:
-        data = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, _fetch),
-            timeout=10,
+    # Fall back to Yahoo Fantasy player search — uses existing OAuth, covers all NBA
+    # players (not just rostered ones), and is far more reliable than the NBA Stats API.
+    from .ingestion.yahoo import lookup_player_info
+    yahoo_info = await lookup_player_info(player_name)
+    if yahoo_info and yahoo_info.get("team"):
+        team      = normalize_team_abbr(yahoo_info["team"])
+        positions = yahoo_info["positions"]
+        # Cache in DB so future lookups are instant
+        from sqlalchemy.dialects.postgresql import insert as pg_insert2
+        await db.execute(
+            pg_insert2(Player)
+            .values(name=player_name, team=team, positions=positions, is_active=False, is_il=False)
+            .on_conflict_do_update(
+                constraint="uq_players_name",
+                set_={"team": team, "positions": positions},
+            )
         )
-    except (asyncio.TimeoutError, Exception):
-        # External API unavailable — return what we know so the user can still add
-        # the player and set positions manually via the roster position editor.
+        await db.commit()
         return NBAPlayerInfo(
             player_id=player_id,
             name=player_name,
-            team="",
-            nba_position="",
-            positions=["SF", "PF"],
+            team=team,
+            nba_position="/".join(positions),
+            positions=positions,
         )
 
-    team = normalize_team_abbr(data["team"])
-    positions = map_nba_position(data["nba_position"])
-
+    # Last resort: return what we know so the user can still add the player
+    # and fix team/positions manually via the roster position editor.
     return NBAPlayerInfo(
         player_id=player_id,
-        name=data["name"],
-        team=team,
-        nba_position=data["nba_position"],
-        positions=positions,
+        name=player_name,
+        team="",
+        nba_position="",
+        positions=["SF", "PF"],
     )
 
 

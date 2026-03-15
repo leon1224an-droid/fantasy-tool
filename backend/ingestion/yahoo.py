@@ -248,6 +248,60 @@ async def _get_team_roster(token: str, team_key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Player lookup (used by /players/info for players not in DB)
+# ---------------------------------------------------------------------------
+
+async def lookup_player_info(player_name: str) -> dict | None:
+    """Look up a single player's current team and positions from Yahoo Fantasy.
+
+    Uses the league players search endpoint — covers ALL NBA players in Yahoo's
+    database, not just those on fantasy rosters.  Returns None on any failure
+    so the caller can decide on a fallback.
+    """
+    try:
+        client_id, client_secret, refresh_token, league_id = _require_credentials()
+    except Exception:
+        return None
+
+    try:
+        access_token = await _get_access_token(client_id, client_secret, refresh_token)
+        game_id      = await _get_nba_game_id(access_token)
+        league_key   = f"{game_id}.l.{league_id}"
+
+        # Yahoo player search across the whole NBA game (not just rostered players)
+        data = await _yget(access_token, f"league/{league_key}/players;search={player_name}")
+        players_raw = _dig(data, "fantasy_content", "league", 1, "players") or {}
+
+        for k, v in players_raw.items():
+            if k == "count":
+                continue
+            player_arr = _dig(v, "player")
+            if not player_arr:
+                continue
+
+            attrs_list = player_arr[0] if isinstance(player_arr[0], list) else []
+            attrs = _merge_attrs(attrs_list)
+
+            full_name = _dig(attrs, "name", "full") or attrs.get("full_name", "")
+            if not full_name:
+                continue
+
+            team_abbr      = str(attrs.get("editorial_team_abbr", "")).upper().strip()
+            raw_eligible   = attrs.get("eligible_positions")
+            positions      = _parse_positions(raw_eligible)
+
+            print(f"[yahoo] lookup_player_info '{player_name}' → {full_name}, {team_abbr}, {positions}")
+            return {"name": full_name, "team": team_abbr, "positions": positions}
+
+        print(f"[yahoo] lookup_player_info: no results for '{player_name}'")
+        return None
+
+    except Exception as exc:
+        print(f"[yahoo] lookup_player_info failed for '{player_name}': {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Main ingestion
 # ---------------------------------------------------------------------------
 
