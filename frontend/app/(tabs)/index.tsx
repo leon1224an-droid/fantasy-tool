@@ -130,12 +130,18 @@ export default function HomeScreen() {
     },
   });
 
-  const yahooLinkMutation = useMutation({
-    mutationFn: async () => {
+  const handleYahooLink = async () => {
+    // Open the window synchronously on the click event before any async work,
+    // so browsers don't block it as an unsolicited popup.
+    const win = Platform.OS === "web" ? window.open("", "_blank") : null;
+    try {
       const { auth_url } = await getYahooLink();
-      if (Platform.OS === "web") window.open(auth_url, "_blank");
-    },
-  });
+      if (win) win.location.href = auth_url;
+    } catch (e) {
+      win?.close();
+      throw e;
+    }
+  };
 
   const handleLogout = async () => {
     setSettingsOpen(false);
@@ -241,8 +247,8 @@ export default function HomeScreen() {
             </Text>
           )}
           {!user?.yahoo_linked && (
-            <Button mode="outlined" icon="link" onPress={() => yahooLinkMutation.mutate()}
-              loading={yahooLinkMutation.isPending} disabled={anyPending} style={styles.modalBtn}>
+            <Button mode="outlined" icon="link" onPress={handleYahooLink}
+              disabled={anyPending} style={styles.modalBtn}>
               Link Yahoo Account
             </Button>
           )}
