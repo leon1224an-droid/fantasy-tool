@@ -69,7 +69,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 3. players — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS user_id INTEGER")
+    op.execute("ALTER TABLE players DROP CONSTRAINT IF EXISTS fk_players_user_id")
+    op.execute("ALTER TABLE players ADD CONSTRAINT fk_players_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE")
     op.execute("DROP INDEX IF EXISTS ix_players_user_id")
     op.execute("CREATE INDEX IF NOT EXISTS ix_players_user_id ON players (user_id)")
     op.execute("ALTER TABLE players DROP CONSTRAINT IF EXISTS uq_players_name")
@@ -79,7 +81,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 4. saved_rosters — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.execute("ALTER TABLE saved_rosters ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("ALTER TABLE saved_rosters ADD COLUMN IF NOT EXISTS user_id INTEGER")
+    op.execute("ALTER TABLE saved_rosters DROP CONSTRAINT IF EXISTS fk_saved_rosters_user_id")
+    op.execute("ALTER TABLE saved_rosters ADD CONSTRAINT fk_saved_rosters_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE")
     op.execute("DROP INDEX IF EXISTS ix_saved_rosters_user_id")
     op.execute("CREATE INDEX IF NOT EXISTS ix_saved_rosters_user_id ON saved_rosters (user_id)")
     op.execute("ALTER TABLE saved_rosters DROP CONSTRAINT IF EXISTS uq_saved_roster_name")
@@ -89,7 +93,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 5. yahoo_league_teams — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.execute("ALTER TABLE yahoo_league_teams ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("ALTER TABLE yahoo_league_teams ADD COLUMN IF NOT EXISTS user_id INTEGER")
+    op.execute("ALTER TABLE yahoo_league_teams DROP CONSTRAINT IF EXISTS fk_yahoo_league_teams_user_id")
+    op.execute("ALTER TABLE yahoo_league_teams ADD CONSTRAINT fk_yahoo_league_teams_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE")
     op.execute("DROP INDEX IF EXISTS ix_yahoo_league_teams_user_id")
     op.execute("CREATE INDEX IF NOT EXISTS ix_yahoo_league_teams_user_id ON yahoo_league_teams (user_id)")
     op.execute("ALTER TABLE yahoo_league_teams DROP CONSTRAINT IF EXISTS uq_yahoo_team_key")
@@ -99,7 +105,9 @@ def upgrade() -> None:
     # -------------------------------------------------------------------------
     # 6. projection_source_settings — add user_id, add unique constraint
     # -------------------------------------------------------------------------
-    op.execute("ALTER TABLE projection_source_settings ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("ALTER TABLE projection_source_settings ADD COLUMN IF NOT EXISTS user_id INTEGER")
+    op.execute("ALTER TABLE projection_source_settings DROP CONSTRAINT IF EXISTS fk_proj_source_user_id")
+    op.execute("ALTER TABLE projection_source_settings ADD CONSTRAINT fk_proj_source_user_id FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE")
     op.execute("DROP INDEX IF EXISTS ix_proj_source_user_id")
     op.execute("CREATE INDEX IF NOT EXISTS ix_proj_source_user_id ON projection_source_settings (user_id)")
     op.execute("ALTER TABLE projection_source_settings DROP CONSTRAINT IF EXISTS uq_proj_source_user")

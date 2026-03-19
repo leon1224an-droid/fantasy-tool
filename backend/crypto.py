@@ -15,10 +15,18 @@ from cryptography.fernet import Fernet, InvalidToken
 
 _raw_key = os.getenv("FIELD_ENCRYPTION_KEY", "")
 
+_fernet: Fernet | None = None
 if _raw_key:
-    _fernet: Fernet | None = Fernet(_raw_key.encode())
+    try:
+        _fernet = Fernet(_raw_key.encode())
+    except Exception:
+        warnings.warn(
+            "FIELD_ENCRYPTION_KEY is set but is not a valid Fernet key — "
+            "Yahoo tokens will be stored in plaintext. "
+            "Generate a valid key with: python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\"",
+            stacklevel=1,
+        )
 else:
-    _fernet = None
     warnings.warn(
         "FIELD_ENCRYPTION_KEY is not set — Yahoo tokens will be stored in plaintext. "
         "Set this variable before deploying to production.",
