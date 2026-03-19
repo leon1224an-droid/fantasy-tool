@@ -99,7 +99,17 @@ export default function HomeScreen() {
   };
 
   const syncMutation = useMutation({
-    mutationFn: async () => { await ingestYahooLeague(); await ingestAll(); },
+    mutationFn: async () => {
+      try {
+        await ingestYahooLeague();
+      } catch (e: any) {
+        if (e.message?.includes("not linked")) {
+          throw new Error("Link your Yahoo account first, then sync.");
+        }
+        throw e;
+      }
+      await ingestAll();
+    },
     onSuccess: invalidateAll,
   });
 
