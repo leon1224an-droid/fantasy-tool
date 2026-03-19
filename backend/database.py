@@ -29,12 +29,11 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://") and "+asyncpg" not in DATABASE_URL:
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
+_is_sqlite = DATABASE_URL.startswith("sqlite")
 engine = create_async_engine(
     DATABASE_URL,
     echo=False,
-    pool_size=5,
-    max_overflow=10,
-    pool_pre_ping=True,
+    **({} if _is_sqlite else {"pool_size": 5, "max_overflow": 10, "pool_pre_ping": True}),
 )
 
 AsyncSessionLocal = async_sessionmaker(

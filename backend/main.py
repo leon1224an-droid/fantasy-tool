@@ -1,46 +1,59 @@
-"""  # noqa
+"""
 FastAPI application entry point.
 
-Endpoints
----------
-GET  /health                  — liveness check
-POST /ingest/schedule         — pull ESPN schedule → TeamSchedule + GameDay rows
-POST /ingest/projections      — pull NBA Stats averages → PlayerProjection rows
-POST /ingest/all              — schedule then projections in one call
-GET  /schedule                — games-per-week for roster teams
-GET  /projections             — stored projections (optional ?week=21|22|23)
-GET  /optimize                — ILP weekly lineup optimizer (optional ?week=21|22|23)
-GET  /calendar                — daily greedy lineup for every day of all 3 weeks
-GET  /player-grid             — player × day game/start matrix with raw vs playable totals
+Public endpoints (no auth):
+  GET  /health
+  POST /ingest/schedule
+  POST /ingest/all
+  GET  /schedule/all
+  GET  /team-days
+  GET  /players/search
+
+Protected endpoints (Bearer token required):
+  GET  /schedule               — user's roster teams
+  GET  /projections
+  POST /ingest/projections
+  GET  /optimize
+  GET  /calendar
+  GET  /player-grid
+  POST /simulate-schedule
+  GET  /players/info/{id}
+  GET  /roster  /POST /roster  etc.
+  GET/POST/PUT/DELETE /saved-rosters
 """
 
-import asyncio
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.requests import Request
 from pydantic import BaseModel
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from .auth_utils import get_current_user
 from .database import dispose_db, get_db, init_db
-from .ingestion.projections import ROSTER, ingest_projections, map_nba_position
+from .limiter import limiter
+from .ingestion.projections import ingest_projections
 from .ingestion.schedule import PLAYOFF_WEEKS, expand_team_set, ingest_schedule, normalize_team_abbr
 from .ingestion.source import get_active_source
-from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, YahooLeagueTeam
+from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, User, YahooLeagueTeam
 from .optimizer.daily import DailyPlayer, optimize_daily_lineup
 from .optimizer.lineup import LineupResult, optimize_all_weeks, optimize_lineup, PlayerInput
 from .routers.auth import router as auth_router
 from .routers.ingestion import router as ingestion_ext_router
-from .routers.projections import router as projections_router
 from .routers.league import router as league_router
+from .routers.projections import router as projections_router
+from .routers.users import router as users_router
 
 
 # ---------------------------------------------------------------------------
-# Lifespan (startup / shutdown)
+# Lifespan
 # ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -51,18 +64,29 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Fantasy Basketball Playoff Optimizer",
-    description="Optimizes weekly lineups for a 13-player roster over a 3-week playoff.",
-    version="0.3.0",
+    description="Multi-user optimizer for a 3-week fantasy basketball playoff.",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+import os as _os
+_ALLOWED_ORIGINS = _os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:8081,http://localhost:8082,http://localhost:19006,http://localhost:3000",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+app.include_router(users_router)
 app.include_router(auth_router)
 app.include_router(ingestion_ext_router)
 app.include_router(projections_router)
@@ -125,44 +149,42 @@ class WeeklyLineupResponse(BaseModel):
     total_projected: float
 
 
-# Calendar schemas
 class DailySlot(BaseModel):
     slot: str
     player: str | None = None
 
 
 class DailyLineupResponse(BaseModel):
-    date: str           # "2026-03-16"
-    day_label: str      # "Mon 3/16"
+    date: str
+    day_label: str
     players_available: int
     players_starting: int
-    lineup: list[DailySlot]   # 10 slots in order
+    lineup: list[DailySlot]
     benched: list[str]
-    all_starting: bool  # True when no one is benched
+    all_starting: bool
 
 
 class WeeklyCalendarResponse(BaseModel):
     week_num: int
-    week_dates: str     # "Mar 16 – Mar 22"
+    week_dates: str
     days: list[DailyLineupResponse]
 
 
-# Player grid schemas
 class PlayerDayCell(BaseModel):
     date: str
     day_label: str
     week_num: int
     has_game: bool
-    is_starting: bool   # True if the daily optimizer put them in a slot
+    is_starting: bool
 
 
 class PlayerGridRow(BaseModel):
     player: str
     team: str
     positions: list[str]
-    days: list[PlayerDayCell]                  # all 21 days
-    raw_totals: dict[str, int]                 # week_num str → raw games
-    playable_totals: dict[str, int]            # week_num str → startable days
+    days: list[PlayerDayCell]
+    raw_totals: dict[str, int]
+    playable_totals: dict[str, int]
     raw_grand_total: int
     playable_grand_total: int
 
@@ -191,18 +213,26 @@ WEEK_DATES_LABEL = {
 }
 
 
-async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]:
+async def _build_daily_lineups(
+    db: AsyncSession, user_id: int
+) -> list[WeeklyCalendarResponse]:
     """
     Core logic shared by /calendar and /player-grid.
-    Loads GameDay + Player rows, runs the daily greedy optimizer for every
-    day in all 3 weeks, and returns structured WeeklyCalendarResponse objects.
+    Loads the user's active players + their game days, runs the daily greedy
+    optimizer for every day in all 3 weeks.
     """
-    # Load roster players with their fantasy_ppg (for tie-breaking in greedy) — IL excluded
-    player_rows = (await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))).scalars().all()
+    player_rows = (
+        await db.execute(
+            select(Player).where(
+                Player.user_id == user_id,
+                Player.is_active == True,
+                Player.is_il == False,
+            )
+        )
+    ).scalars().all()
 
-    roster_teams = {normalize_team_abbr(p.team) for p in player_rows} or {normalize_team_abbr(p["team"]) for p in ROSTER}
+    roster_teams = {normalize_team_abbr(p.team) for p in player_rows}
 
-    # Load all game days for roster teams (expand to cover old/new abbreviation variants)
     gd_rows = (
         await db.execute(
             select(GameDay)
@@ -214,18 +244,21 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
     if not gd_rows:
         return []
 
-    # Build {week_num: {game_date: [team, ...]}} — normalize team keys
     days_map: dict[int, dict[date, list[str]]] = defaultdict(lambda: defaultdict(list))
     for gd in gd_rows:
         days_map[gd.week_num][gd.game_date].append(normalize_team_abbr(gd.team))
 
-    # Also keep date → label map
     date_label: dict[date, str] = {gd.game_date: gd.day_label for gd in gd_rows}
-    # fantasy_ppg per player (average across weeks, filtered by active source)
-    active_source = await get_active_source(db)
+
+    active_source = await get_active_source(db, user_id=user_id)
     proj_rows = (
         await db.execute(
-            select(PlayerProjection).where(PlayerProjection.source == active_source)
+            select(PlayerProjection)
+            .join(Player, Player.id == PlayerProjection.player_id)
+            .where(
+                Player.user_id == user_id,
+                PlayerProjection.source == active_source,
+            )
         )
     ).scalars().all()
     ppg_map: dict[int, float] = defaultdict(float)
@@ -237,7 +270,6 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
         pid: ppg_map[pid] / ppg_count[pid] for pid in ppg_map
     }
 
-    # Build player lookup: team → list[DailyPlayer] (normalize team keys)
     team_players: dict[str, list[DailyPlayer]] = defaultdict(list)
     for p in player_rows:
         team_players[normalize_team_abbr(p.team)].append(
@@ -262,7 +294,6 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
             teams_today = days_map[week_num].get(d, [])
             label = date_label.get(d, f"{d.strftime('%a')} {d.month}/{d.day}")
 
-            # Collect roster players with games today
             players_today: list[DailyPlayer] = []
             for team in teams_today:
                 players_today.extend(team_players.get(team, []))
@@ -293,7 +324,7 @@ async def _build_daily_lineups(db: AsyncSession) -> list[WeeklyCalendarResponse]
 
 
 # ---------------------------------------------------------------------------
-# Routes
+# Public routes
 # ---------------------------------------------------------------------------
 @app.get("/health", response_model=HealthResponse, tags=["meta"])
 async def health():
@@ -301,65 +332,40 @@ async def health():
 
 
 @app.post("/ingest/schedule", response_model=IngestScheduleResponse, tags=["ingestion"])
-async def run_ingest_schedule(db: AsyncSession = Depends(get_db)):
-    """Fetch ESPN schedule → upsert TeamSchedule + GameDay rows."""
-    schedule = await ingest_schedule(db)
+async def run_ingest_schedule(
+    force: bool = Query(default=False, description="Re-fetch from ESPN even if data exists"),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Fetch ESPN schedule → upsert TeamSchedule + GameDay rows (shared data, no auth).
+    Skips the ESPN API call if schedule data already exists unless force=true.
+    """
+    schedule = await ingest_schedule(db, force=force)
     return IngestScheduleResponse(
         status="ok",
         schedule={str(k): v for k, v in schedule.items()},
     )
-
-
-@app.post("/ingest/projections", response_model=IngestResponse, tags=["ingestion"])
-async def run_ingest_projections(db: AsyncSession = Depends(get_db)):
-    """Seed players then fetch NBA Stats season averages → PlayerProjection rows."""
-    await ingest_projections(db)
-    return IngestResponse(status="ok", message="Projections ingested for all 3 playoff weeks.")
 
 
 @app.post("/ingest/all", response_model=IngestScheduleResponse, tags=["ingestion"])
-async def run_ingest_all(db: AsyncSession = Depends(get_db)):
-    """Run schedule ingestion only (fast).
-    NBA Stats projections are intentionally excluded — they hit a slow external API
-    that causes Railway HTTP timeouts. Use POST /ingest/projections explicitly if needed.
+async def run_ingest_all(
+    force: bool = Query(default=False, description="Re-fetch from ESPN even if data exists"),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    schedule = await ingest_schedule(db)
+    Run schedule ingestion (public). Skips the ESPN call if data already exists
+    unless force=true.
+    """
+    schedule = await ingest_schedule(db, force=force)
     return IngestScheduleResponse(
         status="ok",
         schedule={str(k): v for k, v in schedule.items()},
     )
-
-
-@app.get("/schedule", response_model=list[ScheduleRow], tags=["data"])
-async def get_schedule(db: AsyncSession = Depends(get_db)):
-    """Return stored game counts for all active-roster teams across playoff weeks."""
-    active_players = (
-        await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
-    ).scalars().all()
-    roster_teams = {normalize_team_abbr(p.team) for p in active_players} or {normalize_team_abbr(p["team"]) for p in ROSTER}
-    rows = (
-        await db.execute(
-            select(TeamSchedule)
-            .where(TeamSchedule.team.in_(expand_team_set(roster_teams)))
-            .order_by(TeamSchedule.week_num, TeamSchedule.team)
-        )
-    ).scalars().all()
-
-    return [
-        ScheduleRow(
-            team=normalize_team_abbr(r.team),
-            week_num=r.week_num,
-            week_start=r.week_start.isoformat(),
-            week_end=r.week_end.isoformat(),
-            games_count=r.games_count,
-        )
-        for r in rows
-    ]
 
 
 @app.get("/schedule/all", response_model=list[ScheduleRow], tags=["data"])
 async def get_schedule_all(db: AsyncSession = Depends(get_db)):
-    """Return stored game counts for ALL teams in the DB across playoff weeks."""
+    """Return stored game counts for ALL teams across playoff weeks (no auth)."""
     rows = (
         await db.execute(
             select(TeamSchedule).order_by(TeamSchedule.week_num, TeamSchedule.team)
@@ -386,7 +392,7 @@ class TeamDayRow(BaseModel):
 
 @app.get("/team-days", response_model=list[TeamDayRow], tags=["data"])
 async def get_team_days(db: AsyncSession = Depends(get_db)):
-    """Return every game day for every team across all 3 playoff weeks."""
+    """Return every game day for every team across all 3 playoff weeks (no auth)."""
     rows = (
         await db.execute(
             select(GameDay).order_by(GameDay.week_num, GameDay.game_date, GameDay.team)
@@ -398,17 +404,112 @@ async def get_team_days(db: AsyncSession = Depends(get_db)):
     ]
 
 
+@app.get("/players/search", tags=["roster"])
+async def search_nba_players(q: str = Query(min_length=2)):
+    """Search active NBA players by name (uses local static data — no auth required)."""
+    from nba_api.stats.static import players as nba_static
+    matches = nba_static.find_players_by_full_name(q)
+    active = [p for p in matches if p["is_active"]][:10]
+    return [
+        {"player_id": p["id"], "name": p["full_name"], "is_active": p["is_active"]}
+        for p in active
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Protected routes — schedule
+# ---------------------------------------------------------------------------
+@app.get("/schedule", response_model=list[ScheduleRow], tags=["data"])
+async def get_schedule(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return stored game counts for the authenticated user's roster teams."""
+    active_players = (
+        await db.execute(
+            select(Player).where(
+                Player.user_id == current_user.id,
+                Player.is_active == True,
+                Player.is_il == False,
+            )
+        )
+    ).scalars().all()
+    roster_teams = {normalize_team_abbr(p.team) for p in active_players}
+
+    rows = (
+        await db.execute(
+            select(TeamSchedule)
+            .where(TeamSchedule.team.in_(expand_team_set(roster_teams)))
+            .order_by(TeamSchedule.week_num, TeamSchedule.team)
+        )
+    ).scalars().all()
+
+    return [
+        ScheduleRow(
+            team=normalize_team_abbr(r.team),
+            week_num=r.week_num,
+            week_start=r.week_start.isoformat(),
+            week_end=r.week_end.isoformat(),
+            games_count=r.games_count,
+        )
+        for r in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Protected routes — ingestion
+# ---------------------------------------------------------------------------
+@app.post("/ingest/projections", response_model=IngestResponse, tags=["ingestion"])
+async def run_ingest_projections(
+    force: bool = Query(default=False, description="Re-fetch from NBA Stats API even if fetched today"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Fetch NBA Stats season averages → PlayerProjection rows for the user's roster.
+    Skips the NBA Stats API call if projections were already fetched today for this
+    user (rate-limited to once per day). Pass force=true to bypass.
+    """
+    if not force and current_user.nba_projections_fetched_at:
+        age = datetime.now(timezone.utc) - current_user.nba_projections_fetched_at
+        if age < timedelta(hours=24):
+            next_fetch = current_user.nba_projections_fetched_at + timedelta(hours=24)
+            return IngestResponse(
+                status="skipped",
+                message=(
+                    f"NBA stats already fetched {int(age.total_seconds() // 3600)}h ago. "
+                    f"Next fetch available at {next_fetch.strftime('%Y-%m-%d %H:%M UTC')}. "
+                    "Pass force=true to override."
+                ),
+            )
+
+    await ingest_projections(db, user_id=current_user.id)
+
+    # Record the successful fetch time
+    current_user.nba_projections_fetched_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return IngestResponse(status="ok", message="Projections ingested for all 3 playoff weeks.")
+
+
+# ---------------------------------------------------------------------------
+# Protected routes — projections view
+# ---------------------------------------------------------------------------
 @app.get("/projections", response_model=list[ProjectionRow], tags=["data"])
 async def get_projections(
     week: int | None = Query(default=None, ge=21, le=23),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Return stored projections filtered by active source. Optionally filter by ?week=21|22|23."""
-    active_source = await get_active_source(db)
+    """Return stored projections for the authenticated user, filtered by active source."""
+    active_source = await get_active_source(db, user_id=current_user.id)
     stmt = (
         select(Player, PlayerProjection)
         .join(PlayerProjection, Player.id == PlayerProjection.player_id)
-        .where(PlayerProjection.source == active_source)
+        .where(
+            Player.user_id == current_user.id,
+            PlayerProjection.source == active_source,
+        )
         .order_by(PlayerProjection.week_num, PlayerProjection.projected_total.desc())
     )
     if week is not None:
@@ -438,22 +539,24 @@ async def get_projections(
     ]
 
 
+# ---------------------------------------------------------------------------
+# Protected routes — optimizer
+# ---------------------------------------------------------------------------
 @app.get("/optimize", response_model=list[WeeklyLineupResponse], tags=["optimizer"])
 async def run_optimize(
     week: int | None = Query(default=None, ge=21, le=23),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """
-    Run the ILP weekly lineup optimizer. Returns optimal starters + bench per week.
-    Optionally restrict to a single week with ?week=21|22|23.
-    """
+    """Run the ILP weekly lineup optimizer for the authenticated user's roster."""
     if week is not None:
-        active_source = await get_active_source(db)
+        active_source = await get_active_source(db, user_id=current_user.id)
         rows = (
             await db.execute(
                 select(Player, PlayerProjection)
                 .join(PlayerProjection, Player.id == PlayerProjection.player_id)
                 .where(
+                    Player.user_id == current_user.id,
                     PlayerProjection.week_num == week,
                     PlayerProjection.source == active_source,
                     Player.is_active == True,
@@ -465,7 +568,7 @@ async def run_optimize(
         if not rows:
             raise HTTPException(
                 status_code=404,
-                detail=f"No projection data for week {week}. Run /ingest/all first.",
+                detail=f"No projection data for week {week}. Run /ingest/projections first.",
             )
 
         players = [
@@ -479,23 +582,22 @@ async def run_optimize(
         result = optimize_lineup(players, week)
         return [_lineup_to_response(result)]
 
-    results = await optimize_all_weeks(db)
+    results = await optimize_all_weeks(db, user_id=current_user.id)
     if not results:
         raise HTTPException(
             status_code=404,
-            detail="No projection data found. Run /ingest/all first.",
+            detail="No projection data found. Run /ingest/projections first.",
         )
     return [_lineup_to_response(r) for r in results]
 
 
 @app.get("/calendar", response_model=list[WeeklyCalendarResponse], tags=["optimizer"])
-async def get_calendar(db: AsyncSession = Depends(get_db)):
-    """
-    Daily greedy lineup optimizer across all 3 playoff weeks.
-    For each day shows which roster players have games, their slot assignments,
-    and who gets benched due to position constraints.
-    """
-    results = await _build_daily_lineups(db)
+async def get_calendar(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Daily greedy lineup optimizer across all 3 playoff weeks for the user's roster."""
+    results = await _build_daily_lineups(db, user_id=current_user.id)
     if not results:
         raise HTTPException(
             status_code=404,
@@ -505,20 +607,14 @@ async def get_calendar(db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Roster management schemas
+# Protected routes — roster management schemas
 # ---------------------------------------------------------------------------
-class NBAPlayerSearchResult(BaseModel):
-    player_id: int
-    name: str
-    is_active: bool
-
-
 class NBAPlayerInfo(BaseModel):
     player_id: int
     name: str
     team: str
     nba_position: str
-    positions: list[str]   # mapped fantasy positions
+    positions: list[str]
 
 
 class RosterAddRequest(BaseModel):
@@ -537,14 +633,19 @@ class RosterPlayer(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Roster management routes
+# Protected routes — roster management
 # ---------------------------------------------------------------------------
 @app.get("/roster", response_model=list[RosterPlayer], tags=["roster"])
-async def get_roster(db: AsyncSession = Depends(get_db)):
-    """Return all active roster players (starters + IL)."""
+async def get_roster(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all active roster players for the authenticated user."""
     players = (
         await db.execute(
-            select(Player).where(Player.is_active == True).order_by(Player.is_il, Player.name)
+            select(Player)
+            .where(Player.user_id == current_user.id, Player.is_active == True)
+            .order_by(Player.is_il, Player.name)
         )
     ).scalars().all()
     return [
@@ -553,38 +654,28 @@ async def get_roster(db: AsyncSession = Depends(get_db)):
     ]
 
 
-@app.get("/players/search", response_model=list[NBAPlayerSearchResult], tags=["roster"])
-async def search_nba_players(q: str = Query(min_length=2)):
-    """Search active NBA players by name (uses local nba_api static data — no API call)."""
-    from nba_api.stats.static import players as nba_static
-
-    matches = nba_static.find_players_by_full_name(q)
-    active = [p for p in matches if p["is_active"]][:10]
-    return [
-        NBAPlayerSearchResult(player_id=p["id"], name=p["full_name"], is_active=p["is_active"])
-        for p in active
-    ]
-
-
 @app.get("/players/info/{player_id}", response_model=NBAPlayerInfo, tags=["roster"])
-async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)):
-    """Fetch team and position for a specific NBA player.
-
-    Checks the DB first (populated during Yahoo league sync) to avoid slow
-    external API calls. Falls back to the NBA Stats API only if the player
-    is not in the DB.
-    """
+async def get_nba_player_info(
+    player_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Fetch team and position for a specific NBA player."""
     from nba_api.stats.static import players as nba_static
 
-    # Resolve name from local static data (no network call)
     static_match = next((p for p in nba_static.get_players() if p["id"] == player_id), None)
     if not static_match:
-        raise HTTPException(status_code=404, detail=f"Player ID {player_id} not found in NBA static data.")
+        raise HTTPException(status_code=404, detail=f"Player ID {player_id} not found.")
     player_name = static_match["full_name"]
 
-    # Try DB first — fast path for all Yahoo-rostered players
+    # Check user's own DB first
     db_player = (
-        await db.execute(select(Player).where(Player.name == player_name))
+        await db.execute(
+            select(Player).where(
+                Player.name == player_name,
+                Player.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
 
     if db_player and db_player.team and db_player.positions:
@@ -596,24 +687,12 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             positions=db_player.positions,
         )
 
-    # Fall back to Yahoo Fantasy player search — uses existing OAuth, covers all NBA
-    # players (not just rostered ones), and is far more reliable than the NBA Stats API.
+    # Fall back to Yahoo Fantasy player search
     from .ingestion.yahoo import lookup_player_info
-    yahoo_info = await lookup_player_info(player_name)
+    yahoo_info = await lookup_player_info(player_name, user=current_user)
     if yahoo_info and yahoo_info.get("team"):
-        team      = normalize_team_abbr(yahoo_info["team"])
+        team = normalize_team_abbr(yahoo_info["team"])
         positions = yahoo_info["positions"]
-        # Cache in DB so future lookups are instant
-        from sqlalchemy.dialects.postgresql import insert as pg_insert2
-        await db.execute(
-            pg_insert2(Player)
-            .values(name=player_name, team=team, positions=positions, is_active=False, is_il=False)
-            .on_conflict_do_update(
-                constraint="uq_players_name",
-                set_={"team": team, "positions": positions},
-            )
-        )
-        await db.commit()
         return NBAPlayerInfo(
             player_id=player_id,
             name=player_name,
@@ -622,8 +701,6 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
             positions=positions,
         )
 
-    # Last resort: return what we know so the user can still add the player
-    # and fix team/positions manually via the roster position editor.
     return NBAPlayerInfo(
         player_id=player_id,
         name=player_name,
@@ -634,31 +711,39 @@ async def get_nba_player_info(player_id: int, db: AsyncSession = Depends(get_db)
 
 
 @app.post("/roster", response_model=RosterPlayer, tags=["roster"])
-async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_db)):
-    """
-    Add a player to the active roster (max 13).
-    If the player already exists but is inactive, reactivates them.
-    After adding, hit POST /ingest/projections to get their stats.
-    """
-    # Check if already on roster
+async def add_to_roster(
+    body: RosterAddRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Add a player to the authenticated user's active roster (max 13)."""
     existing = (
-        await db.execute(select(Player).where(Player.name == body.name))
+        await db.execute(
+            select(Player).where(
+                Player.name == body.name, Player.user_id == current_user.id
+            )
+        )
     ).scalar_one_or_none()
 
     if existing and existing.is_active:
         raise HTTPException(status_code=400, detail=f"{body.name} is already on your roster.")
 
-    # Check max size (only if this is a new player, not a reactivation)
     if not existing:
         count: int = (
             await db.execute(
-                select(func.count(Player.id)).where(Player.is_active == True, Player.is_il == False)
+                select(func.count(Player.id)).where(
+                    Player.user_id == current_user.id,
+                    Player.is_active == True,
+                    Player.is_il == False,
+                )
             )
         ).scalar_one()
         if count >= 13:
-            raise HTTPException(status_code=400, detail="Roster is full (max 13 starters). Move a player to IL first.")
+            raise HTTPException(
+                status_code=400,
+                detail="Roster is full (max 13 starters). Move a player to IL first.",
+            )
 
-    # Upsert player (always added as starter; use /roster/{name}/il to move to IL)
     stmt = (
         pg_insert(Player)
         .values(
@@ -667,9 +752,10 @@ async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_d
             positions=body.positions,
             is_active=True,
             is_il=False,
+            user_id=current_user.id,
         )
         .on_conflict_do_update(
-            constraint="uq_players_name",
+            constraint="uq_players_name_user",
             set_={"team": body.team, "positions": body.positions, "is_active": True, "is_il": False},
         )
     )
@@ -677,16 +763,24 @@ async def add_to_roster(body: RosterAddRequest, db: AsyncSession = Depends(get_d
     await db.commit()
 
     player = (
-        await db.execute(select(Player).where(Player.name == body.name))
+        await db.execute(
+            select(Player).where(Player.name == body.name, Player.user_id == current_user.id)
+        )
     ).scalar_one()
     return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=True, is_il=False)
 
 
 @app.delete("/roster/{player_name}", tags=["roster"])
-async def remove_from_roster(player_name: str, db: AsyncSession = Depends(get_db)):
-    """Remove a player from the active roster (sets is_active=False)."""
+async def remove_from_roster(
+    player_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Remove a player from the authenticated user's roster (sets is_active=False)."""
     result = await db.execute(
-        update(Player).where(Player.name == player_name).values(is_active=False)
+        update(Player)
+        .where(Player.name == player_name, Player.user_id == current_user.id)
+        .values(is_active=False)
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"Player '{player_name}' not found.")
@@ -695,9 +789,16 @@ async def remove_from_roster(player_name: str, db: AsyncSession = Depends(get_db
 
 
 @app.delete("/roster", tags=["roster"])
-async def clear_roster(db: AsyncSession = Depends(get_db)):
-    """Deactivate all active roster players at once."""
-    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+async def clear_roster(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Deactivate all active roster players for the authenticated user."""
+    await db.execute(
+        update(Player)
+        .where(Player.user_id == current_user.id, Player.is_active == True)
+        .values(is_active=False)
+    )
     await db.commit()
     return {"status": "ok"}
 
@@ -707,10 +808,19 @@ class LoadYahooTeamRequest(BaseModel):
 
 
 @app.post("/roster/load-yahoo-team", response_model=list[RosterPlayer], tags=["roster"])
-async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession = Depends(get_db)):
+async def load_yahoo_team_to_roster(
+    body: LoadYahooTeamRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """Replace the active roster with all players from a Yahoo league team."""
     team = (
-        await db.execute(select(YahooLeagueTeam).where(YahooLeagueTeam.team_key == body.team_key))
+        await db.execute(
+            select(YahooLeagueTeam).where(
+                YahooLeagueTeam.team_key == body.team_key,
+                YahooLeagueTeam.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
     if not team:
         raise HTTPException(status_code=404, detail=f"Yahoo team '{body.team_key}' not found.")
@@ -718,9 +828,12 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
     roster_data: list[dict] = team.roster or []
 
     # Deactivate current roster
-    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+    await db.execute(
+        update(Player)
+        .where(Player.user_id == current_user.id, Player.is_active == True)
+        .values(is_active=False)
+    )
 
-    # Upsert each player — respect Yahoo's IL slot status from DB
     for p_data in roster_data:
         is_il = bool(p_data.get("is_il", False))
         stmt = (
@@ -731,17 +844,22 @@ async def load_yahoo_team_to_roster(body: LoadYahooTeamRequest, db: AsyncSession
                 positions=p_data.get("positions", []),
                 is_active=True,
                 is_il=is_il,
+                user_id=current_user.id,
             )
             .on_conflict_do_update(
-                constraint="uq_players_name",
-                set_={"team": p_data["team"], "positions": p_data.get("positions", []), "is_active": True, "is_il": is_il},
+                constraint="uq_players_name_user",
+                set_={
+                    "team": p_data["team"],
+                    "positions": p_data.get("positions", []),
+                    "is_active": True,
+                    "is_il": is_il,
+                },
             )
         )
         await db.execute(stmt)
 
     await db.commit()
 
-    # Return directly from the JSONB dict — avoids SQLAlchemy identity-map returning stale ORM objects
     return [
         RosterPlayer(
             name=p["name"],
@@ -760,19 +878,28 @@ class UpdatePositionsRequest(BaseModel):
 
 @app.patch("/roster/{player_name}/positions", response_model=RosterPlayer, tags=["roster"])
 async def update_roster_positions(
-    player_name: str, body: UpdatePositionsRequest, db: AsyncSession = Depends(get_db)
+    player_name: str,
+    body: UpdatePositionsRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Update the fantasy positions for an existing roster player."""
     result = await db.execute(
         update(Player)
-        .where(Player.name == player_name, Player.is_active == True)
+        .where(
+            Player.name == player_name,
+            Player.user_id == current_user.id,
+            Player.is_active == True,
+        )
         .values(positions=body.positions)
     )
     if result.rowcount == 0:
         raise HTTPException(status_code=404, detail=f"Active player '{player_name}' not found.")
     await db.commit()
     player = (
-        await db.execute(select(Player).where(Player.name == player_name))
+        await db.execute(
+            select(Player).where(Player.name == player_name, Player.user_id == current_user.id)
+        )
     ).scalar_one()
     return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active, is_il=player.is_il)
 
@@ -783,44 +910,70 @@ class SetILRequest(BaseModel):
 
 @app.patch("/roster/{player_name}/il", response_model=RosterPlayer, tags=["roster"])
 async def set_player_il(
-    player_name: str, body: SetILRequest, db: AsyncSession = Depends(get_db)
+    player_name: str,
+    body: SetILRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Toggle a player's IL status. IL players stay on the roster but are excluded from optimizer/calendar."""
+    """Toggle a player's IL status."""
     player = (
-        await db.execute(select(Player).where(Player.name == player_name, Player.is_active == True))
+        await db.execute(
+            select(Player).where(
+                Player.name == player_name,
+                Player.user_id == current_user.id,
+                Player.is_active == True,
+            )
+        )
     ).scalar_one_or_none()
     if not player:
         raise HTTPException(status_code=404, detail=f"Active player '{player_name}' not found.")
 
     if body.is_il and not player.is_il:
-        # Moving to IL — check limit
         il_count: int = (
             await db.execute(
-                select(func.count(Player.id))
-                .where(Player.is_active == True, Player.is_il == True, Player.name != player_name)
+                select(func.count(Player.id)).where(
+                    Player.user_id == current_user.id,
+                    Player.is_active == True,
+                    Player.is_il == True,
+                    Player.name != player_name,
+                )
             )
         ).scalar_one()
         if il_count >= 3:
             raise HTTPException(status_code=400, detail="IL slots full (max 3).")
     elif not body.is_il and player.is_il:
-        # Moving to starters — check limit
         starter_count: int = (
             await db.execute(
-                select(func.count(Player.id))
-                .where(Player.is_active == True, Player.is_il == False, Player.name != player_name)
+                select(func.count(Player.id)).where(
+                    Player.user_id == current_user.id,
+                    Player.is_active == True,
+                    Player.is_il == False,
+                    Player.name != player_name,
+                )
             )
         ).scalar_one()
         if starter_count >= 13:
-            raise HTTPException(status_code=400, detail="Starter roster is full (max 13). Remove a starter first.")
+            raise HTTPException(
+                status_code=400,
+                detail="Starter roster is full (max 13). Remove a starter first.",
+            )
 
-    await db.execute(update(Player).where(Player.name == player_name).values(is_il=body.is_il))
+    await db.execute(
+        update(Player)
+        .where(Player.name == player_name, Player.user_id == current_user.id)
+        .values(is_il=body.is_il)
+    )
     await db.commit()
-    player = (await db.execute(select(Player).where(Player.name == player_name))).scalar_one()
+    player = (
+        await db.execute(
+            select(Player).where(Player.name == player_name, Player.user_id == current_user.id)
+        )
+    ).scalar_one()
     return RosterPlayer(name=player.name, team=player.team, positions=player.positions, is_active=player.is_active, is_il=player.is_il)
 
 
 # ---------------------------------------------------------------------------
-# Saved roster schemas + routes
+# Protected routes — saved rosters
 # ---------------------------------------------------------------------------
 class SavedRosterEntry(BaseModel):
     name: str
@@ -840,10 +993,6 @@ class SavedRosterRequest(BaseModel):
     players: list[SavedRosterEntry]
 
 
-class RenameSavedRosterRequest(BaseModel):
-    name: str
-
-
 def _to_schema(r: SavedRoster) -> SavedRosterSchema:
     return SavedRosterSchema(
         id=r.id,
@@ -854,23 +1003,41 @@ def _to_schema(r: SavedRoster) -> SavedRosterSchema:
 
 
 @app.get("/saved-rosters", response_model=list[SavedRosterSchema], tags=["saved-rosters"])
-async def list_saved_rosters(db: AsyncSession = Depends(get_db)):
-    """Return all saved rosters ordered by creation time."""
+async def list_saved_rosters(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     rows = (
-        await db.execute(select(SavedRoster).order_by(SavedRoster.created_at))
+        await db.execute(
+            select(SavedRoster)
+            .where(SavedRoster.user_id == current_user.id)
+            .order_by(SavedRoster.created_at)
+        )
     ).scalars().all()
     return [_to_schema(r) for r in rows]
 
 
 @app.post("/saved-rosters", response_model=SavedRosterSchema, tags=["saved-rosters"])
-async def create_saved_roster(body: SavedRosterRequest, db: AsyncSession = Depends(get_db)):
-    """Create a new named roster snapshot."""
+async def create_saved_roster(
+    body: SavedRosterRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     existing = (
-        await db.execute(select(SavedRoster).where(SavedRoster.name == body.name))
+        await db.execute(
+            select(SavedRoster).where(
+                SavedRoster.name == body.name,
+                SavedRoster.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
     if existing:
         raise HTTPException(status_code=400, detail=f"A roster named '{body.name}' already exists.")
-    row = SavedRoster(name=body.name, players=[p.model_dump() for p in body.players])
+    row = SavedRoster(
+        name=body.name,
+        players=[p.model_dump() for p in body.players],
+        user_id=current_user.id,
+    )
     db.add(row)
     await db.commit()
     await db.refresh(row)
@@ -879,18 +1046,29 @@ async def create_saved_roster(body: SavedRosterRequest, db: AsyncSession = Depen
 
 @app.put("/saved-rosters/{roster_id}", response_model=SavedRosterSchema, tags=["saved-rosters"])
 async def update_saved_roster(
-    roster_id: int, body: SavedRosterRequest, db: AsyncSession = Depends(get_db)
+    roster_id: int,
+    body: SavedRosterRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
-    """Replace the name and player list of a saved roster."""
     row = (
-        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+        await db.execute(
+            select(SavedRoster).where(
+                SavedRoster.id == roster_id,
+                SavedRoster.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Saved roster not found.")
-    # Check name uniqueness if changing
     if body.name != row.name:
         conflict = (
-            await db.execute(select(SavedRoster).where(SavedRoster.name == body.name))
+            await db.execute(
+                select(SavedRoster).where(
+                    SavedRoster.name == body.name,
+                    SavedRoster.user_id == current_user.id,
+                )
+            )
         ).scalar_one_or_none()
         if conflict:
             raise HTTPException(status_code=400, detail=f"A roster named '{body.name}' already exists.")
@@ -902,10 +1080,18 @@ async def update_saved_roster(
 
 
 @app.delete("/saved-rosters/{roster_id}", tags=["saved-rosters"])
-async def delete_saved_roster(roster_id: int, db: AsyncSession = Depends(get_db)):
-    """Delete a saved roster."""
+async def delete_saved_roster(
+    roster_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     row = (
-        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+        await db.execute(
+            select(SavedRoster).where(
+                SavedRoster.id == roster_id,
+                SavedRoster.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Saved roster not found.")
@@ -915,22 +1101,29 @@ async def delete_saved_roster(roster_id: int, db: AsyncSession = Depends(get_db)
 
 
 @app.post("/saved-rosters/{roster_id}/activate", response_model=list[RosterPlayer], tags=["saved-rosters"])
-async def activate_saved_roster(roster_id: int, db: AsyncSession = Depends(get_db)):
-    """
-    Set the active roster to the players in this saved roster.
-    Deactivates all current active players, then activates (or inserts) each
-    player from the saved roster.
-    """
+async def activate_saved_roster(
+    roster_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Set the active roster to the players in a saved roster."""
     saved = (
-        await db.execute(select(SavedRoster).where(SavedRoster.id == roster_id))
+        await db.execute(
+            select(SavedRoster).where(
+                SavedRoster.id == roster_id,
+                SavedRoster.user_id == current_user.id,
+            )
+        )
     ).scalar_one_or_none()
     if not saved:
         raise HTTPException(status_code=404, detail="Saved roster not found.")
 
-    # Deactivate everyone currently active
-    await db.execute(update(Player).where(Player.is_active == True).values(is_active=False))
+    await db.execute(
+        update(Player)
+        .where(Player.user_id == current_user.id, Player.is_active == True)
+        .values(is_active=False)
+    )
 
-    # Activate/insert each player from the saved roster
     for entry in (saved.players or []):
         stmt = (
             pg_insert(Player)
@@ -939,10 +1132,15 @@ async def activate_saved_roster(roster_id: int, db: AsyncSession = Depends(get_d
                 team=entry["team"],
                 positions=entry.get("positions", []),
                 is_active=True,
+                user_id=current_user.id,
             )
             .on_conflict_do_update(
-                constraint="uq_players_name",
-                set_={"team": entry["team"], "positions": entry.get("positions", []), "is_active": True},
+                constraint="uq_players_name_user",
+                set_={
+                    "team": entry["team"],
+                    "positions": entry.get("positions", []),
+                    "is_active": True,
+                },
             )
         )
         await db.execute(stmt)
@@ -950,13 +1148,17 @@ async def activate_saved_roster(roster_id: int, db: AsyncSession = Depends(get_d
     await db.commit()
 
     active = (
-        await db.execute(select(Player).where(Player.is_active == True).order_by(Player.name))
+        await db.execute(
+            select(Player)
+            .where(Player.user_id == current_user.id, Player.is_active == True)
+            .order_by(Player.name)
+        )
     ).scalars().all()
     return [RosterPlayer(name=p.name, team=p.team, positions=p.positions, is_active=True) for p in active]
 
 
 # ---------------------------------------------------------------------------
-# Schedule simulation schemas + route
+# Protected routes — schedule simulation
 # ---------------------------------------------------------------------------
 class PlayerWeekStarts(BaseModel):
     week_num: int
@@ -981,10 +1183,14 @@ class SimulateScheduleRequest(BaseModel):
 
 
 @app.post("/simulate-schedule", response_model=SimulateScheduleResponse, tags=["optimizer"])
-async def simulate_schedule(body: SimulateScheduleRequest, db: AsyncSession = Depends(get_db)):
+async def simulate_schedule(
+    body: SimulateScheduleRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     """
-    Given an arbitrary player list (with team + positions), simulate the daily greedy
-    optimizer for all 3 playoff weeks and return per-player playable starts.
+    Given an arbitrary player list, simulate the daily greedy optimizer for all
+    3 playoff weeks and return per-player playable starts.
     """
     if not body.players:
         return SimulateScheduleResponse(players=[])
@@ -999,7 +1205,6 @@ async def simulate_schedule(body: SimulateScheduleRequest, db: AsyncSession = De
         )
     ).scalars().all()
 
-    # {week_num: {game_date: [team, ...]}} — normalize team keys
     days_map: dict[int, dict[date, list[str]]] = defaultdict(lambda: defaultdict(list))
     for gd in gd_rows:
         days_map[gd.week_num][gd.game_date].append(normalize_team_abbr(gd.team))
@@ -1038,9 +1243,8 @@ async def simulate_schedule(body: SimulateScheduleRequest, db: AsyncSession = De
 
             d = date.fromordinal(d.toordinal() + 1)
 
-    player_results = []
-    for p in body.players:
-        player_results.append(SimulatePlayerResult(
+    player_results = [
+        SimulatePlayerResult(
             name=p.name,
             team=p.team,
             weeks=[
@@ -1053,27 +1257,29 @@ async def simulate_schedule(body: SimulateScheduleRequest, db: AsyncSession = De
             ],
             total_starts=sum(starts[p.name].values()),
             total_raw_games=sum(raw_games[p.name].values()),
-        ))
+        )
+        for p in body.players
+    ]
 
     return SimulateScheduleResponse(players=player_results)
 
 
+# ---------------------------------------------------------------------------
+# Protected routes — player grid
+# ---------------------------------------------------------------------------
 @app.get("/player-grid", response_model=list[PlayerGridRow], tags=["data"])
-async def get_player_grid(db: AsyncSession = Depends(get_db)):
-    """
-    Player × day grid for all 21 playoff days.
-    Each row shows: which days a player has a game, whether they're starting
-    that day (per daily optimizer), raw game totals, and playable (startable)
-    totals per week.
-    """
-    calendar = await _build_daily_lineups(db)
+async def get_player_grid(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Player × day grid for all 21 playoff days (authenticated user's roster)."""
+    calendar = await _build_daily_lineups(db, user_id=current_user.id)
     if not calendar:
         raise HTTPException(
             status_code=404,
             detail="No schedule data found. Run /ingest/all first.",
         )
 
-    # Build a set of (player_name, date_str) → is_starting
     starting_map: dict[tuple[str, str], bool] = {}
     for week_cal in calendar:
         for day in week_cal.days:
@@ -1083,23 +1289,25 @@ async def get_player_grid(db: AsyncSession = Depends(get_db)):
             for benched in day.benched:
                 starting_map[(benched, day.date)] = False
 
-    # Collect all days in order
-    all_days: list[tuple[str, str, int]] = []  # (date_str, label, week_num)
+    all_days: list[tuple[str, str, int]] = []
     for week_cal in calendar:
         for day in week_cal.days:
             all_days.append((day.date, day.day_label, week_cal.week_num))
 
-    # Load roster players (IL excluded — they don't count in the grid)
     player_rows = (
-        await db.execute(select(Player).where(Player.is_active == True, Player.is_il == False))
+        await db.execute(
+            select(Player).where(
+                Player.user_id == current_user.id,
+                Player.is_active == True,
+                Player.is_il == False,
+            )
+        )
     ).scalars().all()
 
-    # Build set of dates each roster team plays (expand + normalize for abbreviation variants)
-    roster_teams_for_grid = {normalize_team_abbr(p.team) for p in player_rows} or {normalize_team_abbr(p["team"]) for p in ROSTER}
+    roster_teams = {normalize_team_abbr(p.team) for p in player_rows}
     gd_rows = (
         await db.execute(
-            select(GameDay)
-            .where(GameDay.team.in_(expand_team_set(roster_teams_for_grid)))
+            select(GameDay).where(GameDay.team.in_(expand_team_set(roster_teams)))
         )
     ).scalars().all()
     team_game_dates: dict[str, set[str]] = defaultdict(set)

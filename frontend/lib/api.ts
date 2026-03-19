@@ -1,4 +1,5 @@
 import { BASE_URL } from "../constants/config";
+import { tokenStorage } from "./tokenStorage";
 
 // ---------------------------------------------------------------------------
 // TypeScript interfaces matching FastAPI Pydantic models
@@ -93,13 +94,92 @@ export interface PlayerGridRow {
 // API helpers
 // ---------------------------------------------------------------------------
 
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, options);
+/** Injected by AuthProvider after a successful token refresh. */
+let _onTokenRefreshed: ((token: string) => void) | null = null;
+export function setTokenRefreshCallback(cb: (token: string) => void) {
+  _onTokenRefreshed = cb;
+}
+
+async function _refreshToken(): Promise<string | null> {
+  try {
+    const res = await fetch(`${BASE_URL}/auth/refresh`, {
+      method: "POST",
+      credentials: "include",
+    });
+    if (!res.ok) return null;
+    const data: { access_token: string } = await res.json();
+    return data.access_token;
+  } catch {
+    return null;
+  }
+}
+
+async function apiFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = await tokenStorage.get();
+  const headers: Record<string, string> = {
+    ...(options.headers as Record<string, string> ?? {}),
+  };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  let res = await fetch(`${BASE_URL}${path}`, {
+    ...options,
+    headers,
+    credentials: "include",
+  });
+
+  // Auto-refresh on 401 and retry once
+  if (res.status === 401 && token) {
+    const fresh = await _refreshToken();
+    if (fresh) {
+      await tokenStorage.set(fresh);
+      _onTokenRefreshed?.(fresh);
+      res = await fetch(`${BASE_URL}${path}`, {
+        ...options,
+        headers: { ...headers, Authorization: `Bearer ${fresh}` },
+        credentials: "include",
+      });
+    }
+  }
+
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`API error ${res.status}: ${text}`);
   }
   return res.json() as Promise<T>;
+}
+
+// ---------------------------------------------------------------------------
+// Auth endpoints
+// ---------------------------------------------------------------------------
+export interface UserProfile {
+  id: number;
+  email: string;
+  username: string;
+  is_active: boolean;
+  is_admin: boolean;
+  yahoo_league_id: string | null;
+  yahoo_linked: boolean;
+  nba_projections_fetched_at: string | null;
+}
+
+export function getMe(): Promise<UserProfile> {
+  return apiFetch<UserProfile>("/auth/me");
+}
+
+export function updateYahooLeagueId(yahoo_league_id: string): Promise<UserProfile> {
+  return apiFetch<UserProfile>("/auth/me/yahoo", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ yahoo_league_id }),
+  });
+}
+
+export function getYahooLink(): Promise<{ auth_url: string }> {
+  return apiFetch<{ auth_url: string }>("/auth/yahoo/link");
+}
+
+export function unlinkYahoo(): Promise<UserProfile> {
+  return apiFetch<UserProfile>("/auth/me/yahoo", { method: "DELETE" });
 }
 
 export function getOptimize(week?: number): Promise<WeeklyLineupResponse[]> {

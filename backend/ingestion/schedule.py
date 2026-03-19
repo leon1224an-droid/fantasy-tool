@@ -125,11 +125,24 @@ async def fetch_schedule() -> tuple[dict[int, dict[str, int]], dict[int, dict[da
     return week_counts, week_days
 
 
-async def ingest_schedule(db: AsyncSession) -> dict[int, dict[str, int]]:
+async def ingest_schedule(db: AsyncSession, force: bool = False) -> dict[int, dict[str, int]]:
     """
     Fetch the NBA schedule and upsert TeamSchedule + GameDay rows.
     Returns the raw {week_num: {team: games_count}} dict for inspection.
+
+    If force=False (default) and the schedule table already has rows, skip the
+    ESPN API call and return the existing data from the DB — the NBA schedule
+    for a fixed date range never changes after the games are played.
     """
+    if not force:
+        existing = (await db.execute(select(TeamSchedule))).scalars().all()
+        if existing:
+            print("[schedule] Already ingested — returning cached data (pass force=True to re-fetch).")
+            result: dict[int, dict[str, int]] = {}
+            for row in existing:
+                result.setdefault(row.week_num, {})[row.team] = row.games_count
+            return result
+
     week_counts, week_days = await fetch_schedule()
     week_meta = {w["week"]: w for w in PLAYOFF_WEEKS}
 

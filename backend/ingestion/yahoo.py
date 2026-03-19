@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..crypto import decrypt_field
 from ..models import Player, YahooLeagueTeam
 from .projections import map_nba_position
 
@@ -28,11 +29,20 @@ _TIMEOUT = 30.0
 # Credentials + OAuth
 # ---------------------------------------------------------------------------
 
-def _require_credentials() -> tuple[str, str, str, str]:
+def _require_credentials(user=None) -> tuple[str, str, str, str]:
+    """
+    Get Yahoo credentials. App-level client_id/secret come from env vars.
+    User-level refresh_token and league_id come from the User DB row (if provided),
+    falling back to env vars for backward compatibility.
+    """
     client_id     = os.getenv("YAHOO_CLIENT_ID", "")
     client_secret = os.getenv("YAHOO_CLIENT_SECRET", "")
-    refresh_token = os.getenv("YAHOO_REFRESH_TOKEN", "")
-    league_id     = os.getenv("YAHOO_LEAGUE_ID", "")
+    _raw_refresh = (user.yahoo_refresh_token if user else None) or os.getenv("YAHOO_REFRESH_TOKEN", "")
+    refresh_token = decrypt_field(_raw_refresh) if _raw_refresh else ""
+    league_id = (
+        (user.yahoo_league_id if user else None)
+        or os.getenv("YAHOO_LEAGUE_ID", "")
+    )
 
     missing = [n for n, v in [
         ("YAHOO_CLIENT_ID",     client_id),
@@ -44,7 +54,7 @@ def _require_credentials() -> tuple[str, str, str, str]:
     if missing:
         raise HTTPException(
             status_code=400,
-            detail=f"Yahoo credentials not configured. Missing env vars: {', '.join(missing)}",
+            detail=f"Yahoo credentials not configured. Missing: {', '.join(missing)}",
         )
     return client_id, client_secret, refresh_token, league_id
 
@@ -251,7 +261,7 @@ async def _get_team_roster(token: str, team_key: str) -> list[dict]:
 # Player lookup (used by /players/info for players not in DB)
 # ---------------------------------------------------------------------------
 
-async def lookup_player_info(player_name: str) -> dict | None:
+async def lookup_player_info(player_name: str, user=None) -> dict | None:
     """Look up a single player's current team and positions from Yahoo Fantasy.
 
     Uses the league players search endpoint — covers ALL NBA players in Yahoo's
@@ -259,7 +269,7 @@ async def lookup_player_info(player_name: str) -> dict | None:
     so the caller can decide on a fallback.
     """
     try:
-        client_id, client_secret, refresh_token, league_id = _require_credentials()
+        client_id, client_secret, refresh_token, league_id = _require_credentials(user)
     except Exception:
         return None
 
@@ -305,9 +315,10 @@ async def lookup_player_info(player_name: str) -> dict | None:
 # Main ingestion
 # ---------------------------------------------------------------------------
 
-async def ingest_yahoo_league(db: AsyncSession) -> dict:
-    """Fetch all Yahoo league teams + rosters and upsert into DB."""
-    client_id, client_secret, refresh_token, league_id = _require_credentials()
+async def ingest_yahoo_league(db: AsyncSession, user=None) -> dict:
+    """Fetch all Yahoo league teams + rosters and upsert into DB for the given user."""
+    client_id, client_secret, refresh_token, league_id = _require_credentials(user)
+    user_id: int | None = user.id if user else None
 
     access_token = await _get_access_token(client_id, client_secret, refresh_token)
     game_id      = await _get_nba_game_id(access_token)
@@ -331,33 +342,25 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
             pname     = pdata["name"]
             pteam     = pdata["team"]
             positions = pdata["positions"]
-
-            p_stmt = (
-                insert(Player)
-                .values(name=pname, team=pteam, positions=positions, is_active=False, is_il=pdata["is_il"])
-                .on_conflict_do_update(
-                    constraint="uq_players_name",
-                    set_={"team": pteam, "positions": positions, "is_il": pdata["is_il"]},
-                )
-            )
-            await db.execute(p_stmt)
-            await db.flush()
-
             players_upserted += 1
             all_player_names.append(pname)
             roster_list.append({"name": pname, "team": pteam, "positions": positions, "is_il": pdata["is_il"]})
 
+        team_values: dict = {
+            "team_key":     team_info["team_key"],
+            "team_name":    team_info["team_name"],
+            "manager_name": team_info["manager_name"],
+            "roster":       roster_list,
+            "fetched_at":   datetime.now(timezone.utc),
+        }
+        if user_id is not None:
+            team_values["user_id"] = user_id
+
         team_stmt = (
             insert(YahooLeagueTeam)
-            .values(
-                team_key=team_info["team_key"],
-                team_name=team_info["team_name"],
-                manager_name=team_info["manager_name"],
-                roster=roster_list,
-                fetched_at=datetime.now(timezone.utc),
-            )
+            .values(**team_values)
             .on_conflict_do_update(
-                constraint="uq_yahoo_team_key",
+                constraint="uq_yahoo_team_key_user",
                 set_={
                     "team_name":    team_info["team_name"],
                     "manager_name": team_info["manager_name"],
@@ -379,12 +382,12 @@ async def ingest_yahoo_league(db: AsyncSession) -> dict:
 # Live matchup schedule
 # ---------------------------------------------------------------------------
 
-async def fetch_yahoo_matchups(week_num: int) -> list[dict]:
+async def fetch_yahoo_matchups(week_num: int, user=None) -> list[dict]:
     """
     Fetch live matchup pairings from Yahoo Fantasy for the given Yahoo week number.
     Returns [{team_a_key, team_a_name, team_b_key, team_b_name}, ...]
     """
-    client_id, client_secret, refresh_token, league_id = _require_credentials()
+    client_id, client_secret, refresh_token, league_id = _require_credentials(user)
     access_token = await _get_access_token(client_id, client_secret, refresh_token)
     game_id      = await _get_nba_game_id(access_token)
     league_key   = f"{game_id}.l.{league_id}"

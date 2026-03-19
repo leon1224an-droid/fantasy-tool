@@ -12,7 +12,7 @@ import os
 from typing import Any
 
 from nba_api.stats.endpoints import leaguedashplayerstats
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,71 +126,6 @@ async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[st
 # ---------------------------------------------------------------------------
 # Seed helpers
 # ---------------------------------------------------------------------------
-async def ingest_player_directory(db: AsyncSession, season: str | None = None) -> int:
-    """Cache team for every active NBA player using LeagueDashPlayerStats.
-
-    Uses the same endpoint as ingest_projections (known to work) to get
-    PLAYER_NAME + TEAM_ABBREVIATION for all ~500 active players and upsert
-    them as inactive rows.  Only team/positions are overwritten on conflict so
-    existing roster state (is_active, is_il) is preserved.
-
-    Intended to be called as a background task — no timeout limit.
-    """
-    season = season or os.getenv("NBA_SEASON", "2025-26")
-
-    def _fetch() -> list[dict]:
-        endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
-            season=season,
-            per_mode_detailed="PerGame",
-            timeout=60,
-        )
-        df = endpoint.get_data_frames()[0]
-        rows = []
-        for _, row in df.iterrows():
-            name = str(row.get("PLAYER_NAME") or "").strip()
-            team = str(row.get("TEAM_ABBREVIATION") or "").upper().strip()
-            if not name or not team:
-                continue
-            rows.append({"name": name, "team": team})
-        return rows
-
-    try:
-        players = await asyncio.get_event_loop().run_in_executor(None, _fetch)
-    except Exception as exc:
-        print(f"[player_directory] WARNING — LeagueDashPlayerStats failed: {exc}")
-        return 0
-
-    count = 0
-    for p in players:
-        stmt = (
-            insert(Player)
-            .values(name=p["name"], team=p["team"], positions=["SF", "PF"], is_active=False, is_il=False)
-            .on_conflict_do_update(
-                constraint="uq_players_name",
-                set_={"team": p["team"]},
-            )
-        )
-        await db.execute(stmt)
-        count += 1
-
-    await db.commit()
-    print(f"[player_directory] Upserted {count} active NBA players.")
-    return count
-
-
-async def seed_players(db: AsyncSession) -> None:
-    """Upsert initial ROSTER players (only called when players table is empty)."""
-    for p in ROSTER:
-        stmt = (
-            insert(Player)
-            .values(name=p["name"], team=p["team"], positions=p["positions"], is_active=True)
-            .on_conflict_do_update(
-                constraint="uq_players_name",
-                set_={"team": p["team"], "positions": p["positions"], "is_active": True},
-            )
-        )
-        await db.execute(stmt)
-    await db.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -198,30 +133,27 @@ async def seed_players(db: AsyncSession) -> None:
 # ---------------------------------------------------------------------------
 async def ingest_projections(
     db: AsyncSession,
+    user_id: int,
     season: str | None = None,
     players: list | None = None,
 ) -> None:
     """
-    1. If no active players exist yet, seed from hardcoded ROSTER.
-    2. Fetch season averages from NBA Stats API for ALL league players.
-    3. Upsert PlayerProjection (source='nba_api') for each player × 3 playoff weeks.
+    Fetch season averages from NBA Stats API for the user's active players and
+    upsert PlayerProjection (source='nba_api') for each player × 3 playoff weeks.
 
     If `players` is provided, use that list instead of querying active players.
-    This lets the Yahoo ingest pre-populate projections for all rostered players.
     """
     if players is not None:
         active_players = players
     else:
-        # Seed on first run
-        active_count: int = (
-            await db.execute(select(func.count(Player.id)).where(Player.is_active == True))
-        ).scalar_one()
-        if active_count == 0:
-            await seed_players(db)
-
-        # Load all active roster players from DB
+        # Load all active roster players for this user
         active_players = (
-            await db.execute(select(Player).where(Player.is_active == True))
+            await db.execute(
+                select(Player).where(
+                    Player.user_id == user_id,
+                    Player.is_active == True,
+                )
+            )
         ).scalars().all()
 
     # Fetch NBA stats for the whole league

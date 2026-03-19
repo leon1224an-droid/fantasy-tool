@@ -166,16 +166,16 @@ def optimize_lineup(players: list[PlayerInput], week_num: int) -> LineupResult:
 # ---------------------------------------------------------------------------
 # DB-backed convenience wrapper
 # ---------------------------------------------------------------------------
-async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
+async def optimize_all_weeks(db: AsyncSession, user_id: int) -> list[LineupResult]:
     """
-    Load Player + PlayerProjection rows from the DB (filtered by active source)
-    and run the optimizer for each of the 3 playoff weeks.
+    Load Player + PlayerProjection rows from the DB (filtered by active source
+    and user_id) and run the optimizer for each of the 3 playoff weeks.
     Returns one LineupResult per week.
     """
     from ..models import Player, PlayerProjection  # local import avoids circular
     from ..ingestion.source import get_active_source
 
-    active_source = await get_active_source(db)
+    active_source = await get_active_source(db, user_id=user_id)
     results: list[LineupResult] = []
 
     for week_num in (21, 22, 23):
@@ -184,6 +184,7 @@ async def optimize_all_weeks(db: AsyncSession) -> list[LineupResult]:
                 select(Player, PlayerProjection)
                 .join(PlayerProjection, Player.id == PlayerProjection.player_id)
                 .where(
+                    Player.user_id == user_id,
                     PlayerProjection.week_num == week_num,
                     PlayerProjection.source == active_source,
                     Player.is_active == True,

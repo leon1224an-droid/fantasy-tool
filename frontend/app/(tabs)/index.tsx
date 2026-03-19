@@ -24,7 +24,9 @@ import {
   setActiveSource,
   ingestYahooLeague,
   ingestBballMonster,
+  getYahooLink,
 } from "../../lib/api";
+import { useAuth } from "../../lib/authContext";
 
 const SOURCE_LABELS: Record<string, string> = {
   nba_api: "NBA API",
@@ -67,6 +69,7 @@ export default function HomeScreen() {
   const theme = useTheme();
   const router = useRouter();
   const queryClient = useQueryClient();
+  const { user, logout } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const { data: calendar, isLoading: calLoading } = useQuery({
@@ -116,6 +119,18 @@ export default function HomeScreen() {
         .forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
     },
   });
+
+  const yahooLinkMutation = useMutation({
+    mutationFn: async () => {
+      const { auth_url } = await getYahooLink();
+      if (Platform.OS === "web") window.open(auth_url, "_blank");
+    },
+  });
+
+  const handleLogout = async () => {
+    setSettingsOpen(false);
+    await logout();
+  };
 
   const handleBMUpload = () => {
     if (Platform.OS !== "web") return;
@@ -201,6 +216,31 @@ export default function HomeScreen() {
           </Button>
           {bmMutation.isSuccess && <Text style={styles.successMsg}>Imported {(bmMutation.data as any)?.upserted ?? "?"} players.</Text>}
           {bmMutation.isError && <Text style={styles.errorMsg}>{(bmMutation.error as Error).message}</Text>}
+
+          <Divider style={styles.modalDivider} />
+
+          <Text style={styles.modalLabel}>Account</Text>
+          {user && (
+            <Text style={{ fontSize: 13, color: "#555", marginBottom: 10 }}>
+              Signed in as <Text style={{ fontWeight: "700" }}>{user.username}</Text>
+              {" "}({user.email})
+              {"\n"}
+              <Text style={{ color: user.yahoo_linked ? "#2e7d32" : "#999", fontSize: 12 }}>
+                Yahoo: {user.yahoo_linked ? `Linked · League ${user.yahoo_league_id ?? "not set"}` : "Not linked"}
+              </Text>
+            </Text>
+          )}
+          {!user?.yahoo_linked && (
+            <Button mode="outlined" icon="link" onPress={() => yahooLinkMutation.mutate()}
+              loading={yahooLinkMutation.isPending} disabled={anyPending} style={styles.modalBtn}>
+              Link Yahoo Account
+            </Button>
+          )}
+          <Button mode="outlined" icon="logout" onPress={handleLogout}
+            disabled={anyPending} style={[styles.modalBtn, { borderColor: "#c62828" }]}
+            textColor="#c62828">
+            Sign Out
+          </Button>
         </Modal>
       </Portal>
 

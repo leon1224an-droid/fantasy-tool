@@ -26,6 +26,14 @@ from ..models import Player, PlayerProjection, TeamSchedule
 from .projections import compute_fantasy_ppg
 from .schedule import normalize_team_abbr
 
+
+def _df_from_bytes(data: bytes) -> pd.DataFrame:
+    """Auto-detect CSV vs Excel and parse into a DataFrame."""
+    # Excel magic bytes: XLSX starts with PK (0x50 0x4B), XLS starts with 0xD0 0xCF
+    if data[:2] in (b"PK", b"\xd0\xcf"):
+        return pd.read_excel(io.BytesIO(data), engine="openpyxl")
+    return pd.read_csv(io.BytesIO(data))
+
 # ---------------------------------------------------------------------------
 # Column name normalisation
 # ---------------------------------------------------------------------------
@@ -123,11 +131,12 @@ def _parse_positions(pos_str: str) -> list[str]:
 # ---------------------------------------------------------------------------
 # Main ingestion function
 # ---------------------------------------------------------------------------
-async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
+async def ingest_bball_monster_bytes(db: AsyncSession, data: bytes, user_id: int) -> dict:
+    """Ingest Basketball Monster projections from raw bytes (CSV or Excel auto-detected)."""
     try:
-        df = pd.read_csv(io.BytesIO(csv_bytes))
+        df = _df_from_bytes(data)
     except Exception as exc:
-        raise ValueError(f"Failed to parse CSV: {exc}") from exc
+        raise ValueError(f"Failed to parse file: {exc}") from exc
 
     df = _normalize_columns(df)
 
@@ -157,7 +166,9 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
 
     existing_players: dict[str, Player] = {
         p.name: p
-        for p in (await db.execute(select(Player))).scalars().all()
+        for p in (
+            await db.execute(select(Player).where(Player.user_id == user_id))
+        ).scalars().all()
     }
 
     # Determine if stats are totals (has 'games' column) or already per-game
@@ -253,9 +264,9 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
         # Upsert player (preserve is_active flag for existing players)
         p_stmt = (
             insert(Player)
-            .values(name=pname, team=team, positions=positions, is_active=False)
+            .values(name=pname, team=team, positions=positions, is_active=False, user_id=user_id)
             .on_conflict_do_update(
-                constraint="uq_players_name",
+                constraint="uq_players_name_user",
                 set_={"team": team, "positions": positions},
             )
         )
@@ -263,7 +274,9 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
         await db.flush()
 
         player = (
-            await db.execute(select(Player).where(Player.name == pname))
+            await db.execute(
+                select(Player).where(Player.name == pname, Player.user_id == user_id)
+            )
         ).scalar_one_or_none()
         if not player:
             skipped += 1
@@ -321,3 +334,8 @@ async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes) -> dict:
     await db.commit()
     print(f"[bball_monster] Upserted {upserted} players, skipped {skipped}.")
     return {"upserted": upserted, "skipped": skipped}
+
+
+# Backward-compat alias used by the manual CSV upload endpoint
+async def ingest_bball_monster_csv(db: AsyncSession, csv_bytes: bytes, user_id: int) -> dict:
+    return await ingest_bball_monster_bytes(db, csv_bytes, user_id)

@@ -1,7 +1,8 @@
 """
 League-wide endpoints:
-  GET /league/teams                           — list all Yahoo league teams + rosters
-  GET /league/rankings?week=21                — projected category-win rankings
+  GET /league/teams                               — list user's Yahoo league teams + rosters
+  GET /league/rankings?week=21                    — projected category-win rankings
+  GET /league/matchups?week=N                     — live Yahoo matchup schedule
   GET /league/matchup?team_a=X&team_b=Y&week=21  — head-to-head breakdown
 """
 
@@ -10,9 +11,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from ..auth_utils import get_current_user
 from ..database import get_db
 from ..ingestion.yahoo import fetch_yahoo_matchups
-from ..models import YahooLeagueTeam
+from ..models import User, YahooLeagueTeam
 from ..optimizer.league import (
     CategoryResult,
     MatchupResult,
@@ -93,10 +95,17 @@ class ScheduledMatchupResponse(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.get("/teams", response_model=list[LeagueTeamResponse])
-async def get_league_teams(db: AsyncSession = Depends(get_db)):
-    """Return all Yahoo league teams with their rosters."""
+async def get_league_teams(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return the authenticated user's Yahoo league teams with their rosters."""
     teams = (
-        await db.execute(select(YahooLeagueTeam).order_by(YahooLeagueTeam.team_name))
+        await db.execute(
+            select(YahooLeagueTeam)
+            .where(YahooLeagueTeam.user_id == current_user.id)
+            .order_by(YahooLeagueTeam.team_name)
+        )
     ).scalars().all()
 
     result = []
@@ -125,12 +134,13 @@ async def get_league_teams(db: AsyncSession = Depends(get_db)):
 async def get_league_rankings(
     week: int = Query(default=21, ge=21, le=23),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Rank all Yahoo league teams by projected category wins for the given week.
-    Each team is simulated against every other team; category win totals determine rank.
+    Uses the authenticated user's synced Yahoo league data.
     """
-    rankings = await compute_league_rankings(db, week)
+    rankings = await compute_league_rankings(db, week, user_id=current_user.id)
     if not rankings:
         raise HTTPException(
             status_code=404,
@@ -161,13 +171,18 @@ async def get_league_rankings(
 @router.get("/matchups", response_model=list[ScheduledMatchupResponse])
 async def get_league_matchups(
     week: int = Query(..., ge=1, description="Yahoo fantasy week number"),
+    current_user: User = Depends(get_current_user),
 ):
     """
     Fetch the live Yahoo Fantasy matchup schedule for a given week.
-    Uses Yahoo's own week numbering (1-based from season start).
-    Requires Yahoo credentials in env vars.
+    Uses the authenticated user's Yahoo credentials.
     """
-    matchups = await fetch_yahoo_matchups(week)
+    if not current_user.yahoo_refresh_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Yahoo account not linked. Use GET /auth/yahoo/link to authorize first.",
+        )
+    matchups = await fetch_yahoo_matchups(week, user=current_user)
     return [ScheduledMatchupResponse(**m) for m in matchups]
 
 
@@ -179,16 +194,18 @@ async def get_matchup(
     exclude_a: str = Query(default="", description="Comma-separated player names to IL for team A"),
     exclude_b: str = Query(default="", description="Comma-separated player names to IL for team B"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Head-to-head category breakdown between two teams for a given week."""
     exclude: dict[str, set[str]] = {}
     if exclude_a:
-        exclude[team_a] = set(n.strip() for n in exclude_a.split(",") if n.strip())
+        exclude[team_a] = {n.strip() for n in exclude_a.split(",") if n.strip()}
     if exclude_b:
-        exclude[team_b] = set(n.strip() for n in exclude_b.split(",") if n.strip())
+        exclude[team_b] = {n.strip() for n in exclude_b.split(",") if n.strip()}
 
-    projections = await compute_team_projections(db, week, exclude=exclude)
-
+    projections = await compute_team_projections(
+        db, week, user_id=current_user.id, exclude=exclude
+    )
     proj_map: dict[str, TeamProjection] = {p.team_key: p for p in projections}
 
     a_proj = proj_map.get(team_a)

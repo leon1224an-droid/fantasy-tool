@@ -55,11 +55,13 @@ class MatchupResult:
 async def compute_team_projections(
     db: AsyncSession,
     week_num: int,
+    user_id: int,
     exclude: dict[str, set[str]] | None = None,
     max_players: int = 13,
 ) -> list[TeamProjection]:
     """
-    For each Yahoo league team, compute projected stat totals for the week.
+    For each Yahoo league team (belonging to user_id), compute projected stat
+    totals for the week.
 
     Per-game stats  → bball_monster source only (the curated projection CSV).
     Games per week  → GameDay table + daily greedy optimizer (10-slot constraint),
@@ -72,17 +74,24 @@ async def compute_team_projections(
     - After exclusions, only the top `max_players` contribute (sorted by BM
       projected_total where available, otherwise 0).
     - FG%/FT% are weighted averages using fg_att_pg/ft_att_pg as weights.
+    - Player position/team data comes from the JSONB roster stored in
+      YahooLeagueTeam, supplemented by the user's Player records.
     """
-    teams = (await db.execute(select(YahooLeagueTeam))).scalars().all()
+    teams = (
+        await db.execute(
+            select(YahooLeagueTeam).where(YahooLeagueTeam.user_id == user_id)
+        )
+    ).scalars().all()
     if not teams:
         return []
 
-    # --- bball_monster per-game stats (stats source) -------------------------
+    # --- bball_monster per-game stats scoped to this user's players ----------
     bm_rows = (
         await db.execute(
             select(Player, PlayerProjection)
             .join(PlayerProjection, Player.id == PlayerProjection.player_id)
             .where(
+                Player.user_id == user_id,
                 PlayerProjection.week_num == week_num,
                 PlayerProjection.source == "bball_monster",
             )
@@ -90,7 +99,9 @@ async def compute_team_projections(
     ).all()
     bm_lookup: dict[str, PlayerProjection] = {p.name: proj for p, proj in bm_rows}
 
-    # --- Player records for ALL Yahoo-rostered players (positions + NBA team) -
+    # --- Build player info from JSONB roster data + user's Player records ----
+    # Primary source: JSONB (covers all league players regardless of user roster)
+    # Fallback: user's Player table rows for positions if JSONB is incomplete
     all_roster_names: set[str] = set()
     for team in teams:
         for entry in (team.roster or []):
@@ -98,10 +109,30 @@ async def compute_team_projections(
             if pname:
                 all_roster_names.add(pname)
 
-    player_rows = (
-        await db.execute(select(Player).where(Player.name.in_(list(all_roster_names))))
+    user_player_rows = (
+        await db.execute(
+            select(Player).where(
+                Player.user_id == user_id,
+                Player.name.in_(list(all_roster_names)),
+            )
+        )
     ).scalars().all()
-    player_record: dict[str, Player] = {p.name: p for p in player_rows}
+    player_record: dict[str, Player] = {p.name: p for p in user_player_rows}
+
+    # Build a lightweight player-info dict from JSONB (positions + team)
+    # so we can run the daily optimizer for all league players, not just the
+    # user's own roster.
+    jsonb_player_info: dict[str, dict] = {}
+    for team in teams:
+        for entry in (team.roster or []):
+            if not isinstance(entry, dict):
+                continue
+            pname = entry.get("name", "")
+            if pname and pname not in jsonb_player_info:
+                jsonb_player_info[pname] = {
+                    "team":      entry.get("team", ""),
+                    "positions": entry.get("positions", ["SF", "PF"]),
+                }
 
     # --- GameDay schedule for the week (games source) ------------------------
     gd_rows = (
@@ -121,10 +152,11 @@ async def compute_team_projections(
         team_exclude: set[str] = (exclude or {}).get(team.team_key, set())
 
         # Collect all roster players who are active (not on Yahoo IL) and not manually excluded
+        # Use jsonb_player_info as the source of truth for who's in the league
         eligible_names: list[str] = []
         for entry in (team.roster or []):
             pname = entry.get("name") if isinstance(entry, dict) else getattr(entry, "name", None)
-            if not pname or pname in team_exclude or pname not in player_record:
+            if not pname or pname in team_exclude or pname not in jsonb_player_info:
                 continue
             # Skip players Yahoo has placed on IL/IL+/NA slot
             if entry.get("is_il", False):
@@ -141,20 +173,23 @@ async def compute_team_projections(
 
         # Warn about team abbreviation mismatches
         for name in active_names:
-            nba_team = normalize_team_abbr(player_record[name].team or "")
+            info = jsonb_player_info.get(name) or {}
+            nba_team = normalize_team_abbr(info.get("team") or "")
             if nba_team and nba_team not in known_teams:
-                print(f"[league] WARNING: {name} team='{player_record[name].team}' (→'{nba_team}') not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
+                print(f"[league] WARNING: {name} team='{info.get('team')}' (→'{nba_team}') not in GameDay wk{week_num}. Known: {sorted(known_teams)}")
 
         # --- Daily optimizer: uses ALL active players for correct slot filling -
         starts_count: dict[str, int] = {name: 0 for name in active_names}
         for game_date in all_dates:
             players_today: list[DailyPlayer] = []
             for name in active_names:
-                p = player_record[name]
-                if game_date in team_game_dates.get(normalize_team_abbr(p.team or ""), set()):
+                info = jsonb_player_info.get(name) or {}
+                p_team = normalize_team_abbr(info.get("team") or "")
+                p_positions = info.get("positions") or ["SF", "PF"]
+                if game_date in team_game_dates.get(p_team, set()):
                     players_today.append(DailyPlayer(
                         name=name,
-                        positions=p.positions,
+                        positions=p_positions,
                         # Use BM ppg for tie-breaking; 0 if not in BM
                         fantasy_ppg=bm_lookup[name].fantasy_ppg if name in bm_lookup else 0.0,
                     ))
@@ -258,12 +293,12 @@ def project_matchup(a: TeamProjection, b: TeamProjection) -> MatchupResult:
 # League rankings
 # ---------------------------------------------------------------------------
 
-async def compute_league_rankings(db: AsyncSession, week_num: int) -> list[dict]:
+async def compute_league_rankings(db: AsyncSession, week_num: int, user_id: int) -> list[dict]:
     """
     Simulate every team vs every other team and rank by total category wins.
     Returns list sorted by proj_wins descending.
     """
-    projections = await compute_team_projections(db, week_num)
+    projections = await compute_team_projections(db, week_num, user_id=user_id)
     if not projections:
         return []
 

@@ -1,23 +1,30 @@
 """
-Yahoo OAuth 2.0 flow — one-time authorization to obtain a refresh token.
+Yahoo OAuth 2.0 flow — links a Yahoo account to the logged-in user's profile.
 
 Usage:
-  1. Visit GET /auth/yahoo  (in your browser, via Railway URL)
-  2. Authorize the app on Yahoo's login page
-  3. You land on /auth/yahoo/callback which displays your YAHOO_REFRESH_TOKEN
-  4. Copy it into your Railway environment variables
+  1. Client calls GET /auth/yahoo (with Bearer token) → receives a redirect URL
+  2. User opens the redirect URL in a browser, authorizes on Yahoo's page
+  3. Yahoo redirects to /auth/yahoo/callback?code=...&state=<signed_user_token>
+  4. Callback stores the Yahoo refresh token in the User row
+  5. Returns success HTML; app can now call POST /ingest/yahoo-league
 
-Required env vars before starting:
-  YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET
-  YAHOO_REDIRECT_URI  (e.g. https://your-app.railway.app/auth/yahoo/callback)
+Required env vars (app-level, shared across all users):
+  YAHOO_CLIENT_ID, YAHOO_CLIENT_SECRET, YAHOO_REDIRECT_URI
 """
 
 import os
 import urllib.parse
+from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from ..auth_utils import create_state_token, decode_state_token, get_current_user
+from ..crypto import encrypt_field
+from ..database import get_db
+from ..models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -25,58 +32,81 @@ YAHOO_AUTH_URL  = "https://api.login.yahoo.com/oauth2/request_auth"
 YAHOO_TOKEN_URL = "https://api.login.yahoo.com/oauth2/get_token"
 
 
-def _creds() -> tuple[str, str, str]:
+def _app_creds() -> tuple[str, str, str]:
+    """App-level Yahoo credentials (shared across all users)."""
     client_id     = os.getenv("YAHOO_CLIENT_ID", "")
     client_secret = os.getenv("YAHOO_CLIENT_SECRET", "")
     redirect_uri  = os.getenv("YAHOO_REDIRECT_URI", "")
     return client_id, client_secret, redirect_uri
 
 
-@router.get("/yahoo", include_in_schema=True)
-async def yahoo_auth_start():
-    """Redirect browser to Yahoo OAuth authorization page."""
-    client_id, _, redirect_uri = _creds()
+@router.get("/yahoo/link", include_in_schema=True)
+async def yahoo_link_start(current_user: User = Depends(get_current_user)):
+    """
+    Return the Yahoo OAuth authorization URL for the authenticated user.
+    The frontend should open this URL in a browser/webview.
+    """
+    client_id, _, redirect_uri = _app_creds()
 
     if not client_id:
-        return HTMLResponse(
-            "<h2>Error</h2><p>YAHOO_CLIENT_ID is not set in environment variables.</p>",
-            status_code=500,
-        )
+        raise HTTPException(status_code=500, detail="YAHOO_CLIENT_ID is not configured.")
     if not redirect_uri:
-        return HTMLResponse(
-            "<h2>Error</h2><p>YAHOO_REDIRECT_URI is not set. "
-            "Set it to https://your-app.railway.app/auth/yahoo/callback</p>",
+        raise HTTPException(
             status_code=500,
+            detail="YAHOO_REDIRECT_URI is not configured.",
         )
 
+    state = create_state_token(current_user.id)
     params = {
         "client_id":     client_id,
         "redirect_uri":  redirect_uri,
         "response_type": "code",
         "scope":         "openid fspt-r",
+        "state":         state,
     }
     url = f"{YAHOO_AUTH_URL}?{urllib.parse.urlencode(params)}"
-    return RedirectResponse(url)
+    return JSONResponse({"auth_url": url})
 
 
 @router.get("/yahoo/callback", include_in_schema=True)
-async def yahoo_auth_callback(code: str = "", error: str = ""):
+async def yahoo_auth_callback(
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Yahoo redirects here after the user authorizes (or denies) the app.
-    Exchanges the authorization code for tokens and displays the refresh token.
+    Yahoo redirects here after authorization.
+    Exchanges the code for tokens and saves them to the user's profile.
     """
     if error:
         return HTMLResponse(
             f"<h2>Authorization denied</h2><p>{error}</p>",
             status_code=400,
         )
-    if not code:
+    if not code or not state:
         return HTMLResponse(
-            "<h2>Error</h2><p>No authorization code received from Yahoo.</p>",
+            "<h2>Error</h2><p>Missing code or state parameter.</p>",
             status_code=400,
         )
 
-    client_id, client_secret, redirect_uri = _creds()
+    # Verify state and get user_id
+    try:
+        user_id = decode_state_token(state)
+    except HTTPException:
+        return HTMLResponse(
+            "<h2>Error</h2><p>Invalid or expired authorization state. Please try linking again.</p>",
+            status_code=400,
+        )
+
+    from sqlalchemy import select
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+    if not user:
+        return HTMLResponse("<h2>Error</h2><p>User not found.</p>", status_code=404)
+
+    client_id, client_secret, redirect_uri = _app_creds()
 
     async with httpx.AsyncClient(timeout=30) as c:
         resp = await c.post(
@@ -98,45 +128,32 @@ async def yahoo_auth_callback(code: str = "", error: str = ""):
     tokens = resp.json()
     refresh_token = tokens.get("refresh_token", "")
     access_token  = tokens.get("access_token", "")
+    expires_in    = int(tokens.get("expires_in", 3600))
 
-    html = f"""
+    # Save tokens to the user's profile (encrypted at rest)
+    user.yahoo_refresh_token   = encrypt_field(refresh_token)
+    user.yahoo_access_token    = encrypt_field(access_token)
+    user.yahoo_token_expires_at = (
+        datetime.now(timezone.utc) + timedelta(seconds=expires_in)
+    )
+    await db.commit()
+
+    return HTMLResponse("""
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Yahoo Authorization Complete</title>
+  <title>Yahoo Linked</title>
   <style>
-    body {{ font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; }}
-    h1   {{ color: #4a0080; }}
-    .box {{ background: #f5f0ff; border: 1px solid #d0b8f0; border-radius: 8px;
-             padding: 16px; margin: 16px 0; word-break: break-all; font-family: monospace; font-size: 13px; }}
-    .step {{ background: #fff; border: 1px solid #e0e0e0; border-radius: 8px; padding: 16px; margin: 12px 0; }}
-    h3   {{ margin-top: 0; }}
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 60px auto; text-align: center; }
+    h1 { color: #4a0080; }
+    p  { color: #555; }
   </style>
 </head>
 <body>
-  <h1>✓ Yahoo Authorization Successful</h1>
-  <p>Copy the <strong>Refresh Token</strong> below and add it to your Railway environment variables.</p>
-
-  <div class="step">
-    <h3>YAHOO_REFRESH_TOKEN</h3>
-    <div class="box">{refresh_token}</div>
-  </div>
-
-  <div class="step">
-    <h3>What to do next</h3>
-    <ol>
-      <li>Go to your <strong>Railway project → your backend service → Variables</strong></li>
-      <li>Add a new variable: <code>YAHOO_REFRESH_TOKEN</code> = the token above</li>
-      <li>Railway will redeploy automatically</li>
-      <li>Come back to the app and tap <strong>Sync</strong> on the Dashboard</li>
-    </ol>
-  </div>
-
-  <details style="margin-top:20px">
-    <summary style="cursor:pointer; color:#888">Access token (not needed)</summary>
-    <div class="box">{access_token}</div>
-  </details>
+  <h1>&#10003; Yahoo Account Linked</h1>
+  <p>Your Yahoo Fantasy account has been linked successfully.</p>
+  <p>You can close this window and return to the app.</p>
+  <p>Next step: go to <strong>Settings &rarr; Sync Yahoo League</strong> to import your league data.</p>
 </body>
 </html>
-"""
-    return HTMLResponse(html)
+""")
