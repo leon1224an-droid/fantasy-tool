@@ -73,14 +73,22 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 import os as _os
-_ALLOWED_ORIGINS = _os.getenv(
-    "ALLOWED_ORIGINS",
-    "http://localhost:8081,http://localhost:8082,http://localhost:19006,http://localhost:3000",
-).split(",")
+import re as _re
+
+_ALLOWED_ORIGINS_ENV = _os.getenv("ALLOWED_ORIGINS", "")
+
+def _is_allowed_origin(origin: str) -> bool:
+    # Always allow any localhost / 127.0.0.1 port in development
+    if _re.match(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", origin):
+        return True
+    if _ALLOWED_ORIGINS_ENV:
+        return origin in _ALLOWED_ORIGINS_ENV.split(",")
+    return False
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_ALLOWED_ORIGINS,
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=_ALLOWED_ORIGINS_ENV.split(",") if _ALLOWED_ORIGINS_ENV else [],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
