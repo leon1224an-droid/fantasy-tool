@@ -22,128 +22,88 @@ depends_on = None
 
 
 def upgrade() -> None:
+    # Use raw SQL with IF NOT EXISTS / IF EXISTS throughout so this migration
+    # is safe to run even if it was partially applied or the DB is in an
+    # unexpected state.
+
     # -------------------------------------------------------------------------
     # 1. users table
     # -------------------------------------------------------------------------
-    op.create_table(
-        "users",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("email", sa.String(255), nullable=False),
-        sa.Column("username", sa.String(100), nullable=False),
-        sa.Column("hashed_password", sa.String(255), nullable=False),
-        sa.Column("is_active", sa.Boolean(), nullable=False, server_default="true"),
-        sa.Column("is_admin", sa.Boolean(), nullable=False, server_default="false"),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column(
-            "updated_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column("yahoo_refresh_token", sa.String(2048), nullable=True),
-        sa.Column("yahoo_access_token", sa.String(2048), nullable=True),
-        sa.Column("yahoo_token_expires_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("yahoo_league_id", sa.String(50), nullable=True),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("email", name="uq_users_email"),
-        sa.UniqueConstraint("username", name="uq_users_username"),
-    )
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email VARCHAR(255) NOT NULL,
+            username VARCHAR(100) NOT NULL,
+            hashed_password VARCHAR(255) NOT NULL,
+            is_active BOOLEAN NOT NULL DEFAULT TRUE,
+            is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            yahoo_refresh_token VARCHAR(2048),
+            yahoo_access_token VARCHAR(2048),
+            yahoo_token_expires_at TIMESTAMPTZ,
+            yahoo_league_id VARCHAR(50)
+        )
+    """)
+    op.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_email")
+    op.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS uq_users_username")
+    op.execute("ALTER TABLE users ADD CONSTRAINT uq_users_email UNIQUE (email)")
+    op.execute("ALTER TABLE users ADD CONSTRAINT uq_users_username UNIQUE (username)")
 
     # -------------------------------------------------------------------------
     # 2. refresh_tokens table
     # -------------------------------------------------------------------------
-    op.create_table(
-        "refresh_tokens",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("user_id", sa.Integer(), nullable=False),
-        sa.Column("token_hash", sa.String(64), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            nullable=False,
-            server_default=sa.text("now()"),
-        ),
-        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("revoked", sa.Boolean(), nullable=False, server_default="false"),
-        sa.ForeignKeyConstraint(["user_id"], ["users.id"], ondelete="CASCADE"),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("token_hash"),
-    )
+    op.execute("""
+        CREATE TABLE IF NOT EXISTS refresh_tokens (
+            id SERIAL PRIMARY KEY,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            token_hash VARCHAR(64) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            expires_at TIMESTAMPTZ NOT NULL,
+            revoked BOOLEAN NOT NULL DEFAULT FALSE
+        )
+    """)
+    op.execute("ALTER TABLE refresh_tokens DROP CONSTRAINT IF EXISTS refresh_tokens_token_hash_key")
+    op.execute("ALTER TABLE refresh_tokens ADD CONSTRAINT refresh_tokens_token_hash_key UNIQUE (token_hash)")
 
     # -------------------------------------------------------------------------
     # 3. players — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.add_column("players", sa.Column("user_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_players_user_id",
-        "players", "users",
-        ["user_id"], ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index("ix_players_user_id", "players", ["user_id"])
-
-    # Drop the old global unique constraint on name
-    op.drop_constraint("uq_players_name", "players", type_="unique")
-    # Add new per-user unique constraint
-    op.create_unique_constraint("uq_players_name_user", "players", ["name", "user_id"])
+    op.execute("ALTER TABLE players ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("DROP INDEX IF EXISTS ix_players_user_id")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_players_user_id ON players (user_id)")
+    op.execute("ALTER TABLE players DROP CONSTRAINT IF EXISTS uq_players_name")
+    op.execute("ALTER TABLE players DROP CONSTRAINT IF EXISTS uq_players_name_user")
+    op.execute("ALTER TABLE players ADD CONSTRAINT uq_players_name_user UNIQUE (name, user_id)")
 
     # -------------------------------------------------------------------------
     # 4. saved_rosters — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.add_column("saved_rosters", sa.Column("user_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_saved_rosters_user_id",
-        "saved_rosters", "users",
-        ["user_id"], ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index("ix_saved_rosters_user_id", "saved_rosters", ["user_id"])
-
-    op.drop_constraint("uq_saved_roster_name", "saved_rosters", type_="unique")
-    op.create_unique_constraint(
-        "uq_saved_roster_name_user", "saved_rosters", ["name", "user_id"]
-    )
+    op.execute("ALTER TABLE saved_rosters ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("DROP INDEX IF EXISTS ix_saved_rosters_user_id")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_saved_rosters_user_id ON saved_rosters (user_id)")
+    op.execute("ALTER TABLE saved_rosters DROP CONSTRAINT IF EXISTS uq_saved_roster_name")
+    op.execute("ALTER TABLE saved_rosters DROP CONSTRAINT IF EXISTS uq_saved_roster_name_user")
+    op.execute("ALTER TABLE saved_rosters ADD CONSTRAINT uq_saved_roster_name_user UNIQUE (name, user_id)")
 
     # -------------------------------------------------------------------------
     # 5. yahoo_league_teams — add user_id, replace unique constraint
     # -------------------------------------------------------------------------
-    op.add_column("yahoo_league_teams", sa.Column("user_id", sa.Integer(), nullable=True))
-    op.create_foreign_key(
-        "fk_yahoo_league_teams_user_id",
-        "yahoo_league_teams", "users",
-        ["user_id"], ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index("ix_yahoo_league_teams_user_id", "yahoo_league_teams", ["user_id"])
-
-    op.drop_constraint("uq_yahoo_team_key", "yahoo_league_teams", type_="unique")
-    op.create_unique_constraint(
-        "uq_yahoo_team_key_user", "yahoo_league_teams", ["team_key", "user_id"]
-    )
+    op.execute("ALTER TABLE yahoo_league_teams ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("DROP INDEX IF EXISTS ix_yahoo_league_teams_user_id")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_yahoo_league_teams_user_id ON yahoo_league_teams (user_id)")
+    op.execute("ALTER TABLE yahoo_league_teams DROP CONSTRAINT IF EXISTS uq_yahoo_team_key")
+    op.execute("ALTER TABLE yahoo_league_teams DROP CONSTRAINT IF EXISTS uq_yahoo_team_key_user")
+    op.execute("ALTER TABLE yahoo_league_teams ADD CONSTRAINT uq_yahoo_team_key_user UNIQUE (team_key, user_id)")
 
     # -------------------------------------------------------------------------
     # 6. projection_source_settings — add user_id, add unique constraint
     # -------------------------------------------------------------------------
-    op.add_column(
-        "projection_source_settings", sa.Column("user_id", sa.Integer(), nullable=True)
-    )
-    op.create_foreign_key(
-        "fk_proj_source_user_id",
-        "projection_source_settings", "users",
-        ["user_id"], ["id"],
-        ondelete="CASCADE",
-    )
-    op.create_index(
-        "ix_proj_source_user_id", "projection_source_settings", ["user_id"]
-    )
-    op.create_unique_constraint(
-        "uq_proj_source_user", "projection_source_settings", ["user_id"]
-    )
+    op.execute("ALTER TABLE projection_source_settings ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE")
+    op.execute("DROP INDEX IF EXISTS ix_proj_source_user_id")
+    op.execute("CREATE INDEX IF NOT EXISTS ix_proj_source_user_id ON projection_source_settings (user_id)")
+    op.execute("ALTER TABLE projection_source_settings DROP CONSTRAINT IF EXISTS uq_proj_source_user")
+    op.execute("ALTER TABLE projection_source_settings ADD CONSTRAINT uq_proj_source_user UNIQUE (user_id)")
 
 
 def downgrade() -> None:
