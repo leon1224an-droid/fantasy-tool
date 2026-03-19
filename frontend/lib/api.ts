@@ -215,6 +215,10 @@ export async function ingestAll(): Promise<void> {
   await apiFetch<unknown>("/ingest/all", { method: "POST" });
 }
 
+export async function ingestProjections(force = false): Promise<{ status: string; message: string }> {
+  return apiFetch(`/ingest/projections${force ? "?force=true" : ""}`, { method: "POST" });
+}
+
 export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
 }

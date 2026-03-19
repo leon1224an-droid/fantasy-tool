@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Platform, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import {
   ActivityIndicator,
@@ -20,6 +20,7 @@ import {
   getRoster,
   getSavedRosters,
   ingestAll,
+  ingestProjections,
   getActiveSource,
   setActiveSource,
   ingestYahooLeague,
@@ -98,17 +99,28 @@ export default function HomeScreen() {
       .forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
   };
 
+  // Auto-refresh schedule + projections on login if not fetched today
+  useEffect(() => {
+    if (!user) return;
+    const fetchedAt = user.nba_projections_fetched_at
+      ? new Date(user.nba_projections_fetched_at)
+      : null;
+    const stale = !fetchedAt || (Date.now() - fetchedAt.getTime() > 23 * 60 * 60 * 1000);
+    if (stale) {
+      ingestAll().catch(() => {});
+      ingestProjections().catch(() => {});
+    }
+  }, [user?.id]);
+
   const syncMutation = useMutation({
     mutationFn: async () => {
-      try {
-        await ingestYahooLeague();
-      } catch (e: any) {
-        if (e.message?.includes("not linked")) {
-          throw new Error("Link your Yahoo account first, then sync.");
-        }
-        throw e;
-      }
+      // Always refresh schedule + projections
       await ingestAll();
+      await ingestProjections(true); // force=true to bypass the 24h throttle on manual sync
+      // Refresh Yahoo league data only if linked
+      if (user?.yahoo_linked) {
+        await ingestYahooLeague();
+      }
     },
     onSuccess: invalidateAll,
   });
