@@ -178,6 +178,16 @@ export function getYahooLink(): Promise<{ auth_url: string }> {
   return apiFetch<{ auth_url: string }>("/auth/yahoo/link");
 }
 
+export interface YahooLeagueOption {
+  league_id: string;
+  name: string;
+  num_teams: number;
+}
+
+export function getYahooLeagues(): Promise<{ leagues: YahooLeagueOption[] }> {
+  return apiFetch<{ leagues: YahooLeagueOption[] }>("/auth/yahoo/leagues");
+}
+
 export function unlinkYahoo(): Promise<UserProfile> {
   return apiFetch<UserProfile>("/auth/me/yahoo", { method: "DELETE" });
 }
@@ -223,8 +233,13 @@ export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
 }
 
-export function getCalendar(): Promise<WeeklyCalendarResponse[]> {
-  return apiFetch<WeeklyCalendarResponse[]>("/calendar");
+export async function getCalendar(): Promise<WeeklyCalendarResponse[]> {
+  try {
+    return await apiFetch<WeeklyCalendarResponse[]>("/calendar");
+  } catch (e: unknown) {
+    if (e instanceof Error && e.message.startsWith("API error 404")) return [];
+    throw e;
+  }
 }
 
 export function getPlayerGrid(): Promise<PlayerGridRow[]> {
@@ -430,9 +445,16 @@ export function ingestYahooLeague(): Promise<{ status: string; teams_upserted: n
 export async function ingestBballMonster(file: File): Promise<{ status: string; upserted: number; skipped: number }> {
   const formData = new FormData();
   formData.append("file", file);
+  // Use apiFetch-style token injection — cannot use apiFetch directly since
+  // FormData must not have a Content-Type header set manually (browser sets boundary).
+  const token = await tokenStorage.get();
+  const headers: Record<string, string> = {};
+  if (token) headers["Authorization"] = `Bearer ${token}`;
   const res = await fetch(`${BASE_URL}/ingest/bball-monster`, {
     method: "POST",
+    headers,
     body: formData,
+    credentials: "include",
   });
   if (!res.ok) {
     const text = await res.text();

@@ -6,11 +6,11 @@ import {
   Chip,
   Divider,
   IconButton,
+  Menu,
   Modal,
   Portal,
   Surface,
   Text,
-  TextInput,
   useTheme,
 } from "react-native-paper";
 import { useRouter } from "expo-router";
@@ -27,6 +27,7 @@ import {
   ingestYahooLeague,
   ingestBballMonster,
   getYahooLink,
+  getYahooLeagues,
   updateYahooLeagueId,
 } from "../../lib/api";
 import { useAuth } from "../../lib/authContext";
@@ -74,7 +75,7 @@ export default function HomeScreen() {
   const queryClient = useQueryClient();
   const { user, logout, setUser } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [leagueIdInput, setLeagueIdInput] = useState("");
+  const [leagueMenuOpen, setLeagueMenuOpen] = useState(false);
 
   const { data: calendar, isLoading: calLoading } = useQuery({
     queryKey: ["calendar"],
@@ -94,6 +95,13 @@ export default function HomeScreen() {
   const { data: sourceData } = useQuery({
     queryKey: ["projection-source"],
     queryFn: getActiveSource,
+  });
+
+  const { data: leaguesData, isLoading: leaguesLoading } = useQuery({
+    queryKey: ["yahoo-leagues"],
+    queryFn: getYahooLeagues,
+    enabled: !!user?.yahoo_linked && settingsOpen,
+    staleTime: 5 * 60 * 1000,
   });
 
   const invalidateAll = () => {
@@ -149,11 +157,6 @@ export default function HomeScreen() {
         .forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
     },
   });
-
-  // Seed league ID field when modal opens
-  useEffect(() => {
-    if (settingsOpen) setLeagueIdInput(user?.yahoo_league_id ?? "");
-  }, [settingsOpen]);
 
   const handleYahooLink = async () => {
     // Open the window synchronously on the click event before any async work,
@@ -278,29 +281,44 @@ export default function HomeScreen() {
             </Button>
           )}
           {user?.yahoo_linked && (
-            <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginBottom: 4 }}>
-              <TextInput
-                mode="outlined"
-                label="League ID"
-                value={leagueIdInput}
-                onChangeText={setLeagueIdInput}
-                placeholder="e.g. 123456"
-                keyboardType="numeric"
-                style={{ flex: 1, fontSize: 13 }}
-                dense
-              />
-              <Button
-                mode="contained"
-                onPress={() => leagueIdMutation.mutate(leagueIdInput.trim())}
-                disabled={anyPending || leagueIdInput.trim() === (user.yahoo_league_id ?? "")}
-                loading={leagueIdMutation.isPending}
-                style={{ borderRadius: 8 }}
-              >
-                Save
-              </Button>
+            <View style={{ marginBottom: 4 }}>
+              {leaguesLoading && <ActivityIndicator size="small" style={{ marginVertical: 8 }} />}
+              {leaguesData && leaguesData.leagues.length === 0 && (
+                <Text style={styles.errorMsg}>No NBA fantasy leagues found on this Yahoo account.</Text>
+              )}
+              {leaguesData && leaguesData.leagues.length > 0 && (
+                <Menu
+                  visible={leagueMenuOpen}
+                  onDismiss={() => setLeagueMenuOpen(false)}
+                  anchor={
+                    <Button
+                      mode="outlined"
+                      icon="chevron-down"
+                      onPress={() => setLeagueMenuOpen(true)}
+                      disabled={anyPending}
+                      style={styles.modalBtn}
+                      contentStyle={{ flexDirection: "row-reverse" }}
+                    >
+                      {leaguesData.leagues.find((l) => l.league_id === user.yahoo_league_id)?.name
+                        ?? (user.yahoo_league_id ? `League ${user.yahoo_league_id}` : "Select league…")}
+                    </Button>
+                  }
+                >
+                  {leaguesData.leagues.map((l) => (
+                    <Menu.Item
+                      key={l.league_id}
+                      title={`${l.name} (${l.num_teams} teams)`}
+                      onPress={() => {
+                        setLeagueMenuOpen(false);
+                        leagueIdMutation.mutate(l.league_id);
+                      }}
+                    />
+                  ))}
+                </Menu>
+              )}
             </View>
           )}
-          {leagueIdMutation.isSuccess && <Text style={styles.successMsg}>League ID saved.</Text>}
+          {leagueIdMutation.isSuccess && <Text style={styles.successMsg}>League saved.</Text>}
           {leagueIdMutation.isError && <Text style={styles.errorMsg}>{(leagueIdMutation.error as Error).message}</Text>}
           <Button mode="outlined" icon="logout" onPress={handleLogout}
             disabled={anyPending} style={[styles.modalBtn, { borderColor: "#c62828" }]}

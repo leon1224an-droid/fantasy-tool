@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth_utils import create_state_token, decode_state_token, get_current_user
 from ..crypto import encrypt_field
 from ..database import get_db
-from ..ingestion.yahoo import get_user_league_id
+from ..ingestion.yahoo import get_user_league_id, get_user_leagues
 from ..models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -67,6 +67,35 @@ async def yahoo_link_start(current_user: User = Depends(get_current_user)):
     }
     url = f"{YAHOO_AUTH_URL}?{urllib.parse.urlencode(params)}"
     return JSONResponse({"auth_url": url})
+
+
+@router.get("/yahoo/leagues", include_in_schema=True)
+async def yahoo_user_leagues(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Return all NBA fantasy leagues for the authenticated Yahoo-linked user."""
+    from ..crypto import decrypt_field
+
+    raw = current_user.yahoo_refresh_token
+    if not raw:
+        raise HTTPException(status_code=400, detail="Yahoo account not linked.")
+
+    client_id, client_secret, _ = _app_creds()
+    refresh_token = decrypt_field(raw)
+
+    async with httpx.AsyncClient(timeout=30) as c:
+        resp = await c.post(
+            YAHOO_TOKEN_URL,
+            data={"grant_type": "refresh_token", "refresh_token": refresh_token, "redirect_uri": "oob"},
+            auth=(client_id, client_secret),
+        )
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Failed to refresh Yahoo token: {resp.text[:200]}")
+
+    access_token = resp.json()["access_token"]
+    leagues = await get_user_leagues(access_token)
+    return {"leagues": leagues}
 
 
 @router.get("/yahoo/callback", include_in_schema=True)
