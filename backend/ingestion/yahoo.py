@@ -258,6 +258,39 @@ async def _get_team_roster(token: str, team_key: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# League discovery
+# ---------------------------------------------------------------------------
+
+async def get_user_league_id(access_token: str) -> str | None:
+    """Return the first active NBA fantasy league ID for the authenticated user."""
+    try:
+        data = await _yget(access_token, "users;use_login=1/games;game_keys=nba/leagues")
+        user_arr = _dig(data, "fantasy_content", "users", "0", "user")
+        if not isinstance(user_arr, list) or len(user_arr) < 2:
+            return None
+        games = _dig(user_arr, 1, "games")
+        if not games:
+            return None
+        game_arr = _dig(games, "0", "game")
+        if not isinstance(game_arr, list) or len(game_arr) < 2:
+            return None
+        leagues = _dig(game_arr, 1, "leagues")
+        if not leagues:
+            return None
+        league_arr = _dig(leagues, "0", "league")
+        if not league_arr:
+            return None
+        meta = league_arr[0] if isinstance(league_arr, list) else league_arr
+        if isinstance(meta, list):
+            meta = _merge_attrs(meta)
+        league_id = meta.get("league_id") if isinstance(meta, dict) else None
+        return str(league_id) if league_id else None
+    except Exception as exc:
+        print(f"[yahoo] get_user_league_id failed: {exc}")
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Player lookup (used by /players/info for players not in DB)
 # ---------------------------------------------------------------------------
 

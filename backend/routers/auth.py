@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..auth_utils import create_state_token, decode_state_token, get_current_user
 from ..crypto import encrypt_field
 from ..database import get_db
+from ..ingestion.yahoo import get_user_league_id
 from ..models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -136,6 +137,14 @@ async def yahoo_auth_callback(
     user.yahoo_token_expires_at = (
         datetime.now(timezone.utc) + timedelta(seconds=expires_in)
     )
+
+    # Auto-detect the user's NBA fantasy league ID
+    if not user.yahoo_league_id:
+        detected_league_id = await get_user_league_id(access_token)
+        if detected_league_id:
+            user.yahoo_league_id = detected_league_id
+            print(f"[yahoo] Auto-detected league_id={detected_league_id} for user {user.id}")
+
     await db.commit()
 
     return HTMLResponse("""
