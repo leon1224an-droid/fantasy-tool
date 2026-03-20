@@ -10,6 +10,7 @@ import {
   Portal,
   Surface,
   Text,
+  TextInput,
   useTheme,
 } from "react-native-paper";
 import { useRouter } from "expo-router";
@@ -26,6 +27,7 @@ import {
   ingestYahooLeague,
   ingestBballMonster,
   getYahooLink,
+  updateYahooLeagueId,
 } from "../../lib/api";
 import { useAuth } from "../../lib/authContext";
 
@@ -70,8 +72,9 @@ export default function HomeScreen() {
   const theme = useTheme();
   const router = useRouter();
   const queryClient = useQueryClient();
-  const { user, logout } = useAuth();
+  const { user, logout, setUser } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [leagueIdInput, setLeagueIdInput] = useState("");
 
   const { data: calendar, isLoading: calLoading } = useQuery({
     queryKey: ["calendar"],
@@ -133,6 +136,11 @@ export default function HomeScreen() {
     },
   });
 
+  const leagueIdMutation = useMutation({
+    mutationFn: (id: string) => updateYahooLeagueId(id),
+    onSuccess: (updatedUser) => setUser(updatedUser),
+  });
+
   const bmMutation = useMutation({
     mutationFn: (file: File) => ingestBballMonster(file),
     onSuccess: async () => {
@@ -141,6 +149,11 @@ export default function HomeScreen() {
         .forEach((k) => queryClient.invalidateQueries({ queryKey: [k] }));
     },
   });
+
+  // Seed league ID field when modal opens
+  useEffect(() => {
+    if (settingsOpen) setLeagueIdInput(user?.yahoo_league_id ?? "");
+  }, [settingsOpen]);
 
   const handleYahooLink = async () => {
     // Open the window synchronously on the click event before any async work,
@@ -172,7 +185,7 @@ export default function HomeScreen() {
     input.click();
   };
 
-  const anyPending = syncMutation.isPending || bmMutation.isPending || sourceMutation.isPending;
+  const anyPending = syncMutation.isPending || bmMutation.isPending || sourceMutation.isPending || leagueIdMutation.isPending;
 
   const activeRosterName = React.useMemo(() => {
     if (!roster || !savedRosters) return null;
@@ -264,6 +277,31 @@ export default function HomeScreen() {
               Link Yahoo Account
             </Button>
           )}
+          {user?.yahoo_linked && (
+            <View style={{ flexDirection: "row", gap: 8, alignItems: "center", marginBottom: 4 }}>
+              <TextInput
+                mode="outlined"
+                label="League ID"
+                value={leagueIdInput}
+                onChangeText={setLeagueIdInput}
+                placeholder="e.g. 123456"
+                keyboardType="numeric"
+                style={{ flex: 1, fontSize: 13 }}
+                dense
+              />
+              <Button
+                mode="contained"
+                onPress={() => leagueIdMutation.mutate(leagueIdInput.trim())}
+                disabled={anyPending || leagueIdInput.trim() === (user.yahoo_league_id ?? "")}
+                loading={leagueIdMutation.isPending}
+                style={{ borderRadius: 8 }}
+              >
+                Save
+              </Button>
+            </View>
+          )}
+          {leagueIdMutation.isSuccess && <Text style={styles.successMsg}>League ID saved.</Text>}
+          {leagueIdMutation.isError && <Text style={styles.errorMsg}>{(leagueIdMutation.error as Error).message}</Text>}
           <Button mode="outlined" icon="logout" onPress={handleLogout}
             disabled={anyPending} style={[styles.modalBtn, { borderColor: "#c62828" }]}
             textColor="#c62828">
@@ -313,6 +351,20 @@ export default function HomeScreen() {
               </View>
             )}
           </View>
+
+          {activeRoster.length === 0 && (
+            <View style={styles.rosterEmptyBanner}>
+              <MaterialCommunityIcons name="account-alert-outline" size={18} color="#6750a4" />
+              <Text style={styles.rosterEmptyText}>No roster set — </Text>
+              <Pressable onPress={() => { setSettingsOpen(true); }}>
+                <Text style={styles.rosterEmptyLink}>import from Yahoo</Text>
+              </Pressable>
+              <Text style={styles.rosterEmptyText}> or </Text>
+              <Pressable onPress={() => router.push("/(tabs)/roster")}>
+                <Text style={styles.rosterEmptyLink}>build manually</Text>
+              </Pressable>
+            </View>
+          )}
 
           <View style={styles.navGrid}>
             <NavTile icon="account-group" label="Roster" accent="#6750a4" onPress={() => router.push("/(tabs)/roster")} />
@@ -394,6 +446,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   bandBadgeText: { fontSize: 11, fontWeight: "700", color: "#fff" },
+
+  // Roster empty notice
+  rosterEmptyBanner: {
+    flexDirection: "row", alignItems: "center", flexWrap: "wrap",
+    marginHorizontal: 12, marginTop: 12, marginBottom: 2,
+    backgroundColor: "#f3f0ff", borderRadius: 10,
+    paddingHorizontal: 12, paddingVertical: 8, gap: 2,
+  },
+  rosterEmptyText: { fontSize: 13, color: "#555" },
+  rosterEmptyLink: { fontSize: 13, color: "#6750a4", fontWeight: "700", textDecorationLine: "underline" },
 
   // Nav tile grid
   navGrid: { flexDirection: "row", padding: 12, gap: 8 },

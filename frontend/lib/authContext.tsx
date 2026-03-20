@@ -42,6 +42,8 @@ interface AuthState {
   logout: () => Promise<void>;
   /** Called by api.ts after a successful token refresh */
   _setToken: (token: string) => void;
+  /** Update the cached user profile (e.g. after a PATCH /auth/me call) */
+  setUser: (profile: UserProfile) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -55,6 +57,7 @@ const AuthContext = createContext<AuthState>({
   register: async () => {},
   logout: async () => {},
   _setToken: () => {},
+  setUser: () => {},
 });
 
 // ---------------------------------------------------------------------------
@@ -104,7 +107,7 @@ async function _tryRefresh(): Promise<string | null> {
 // ---------------------------------------------------------------------------
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [token, setTokenState] = useState<string | null>(null);
-  const [user, setUser] = useState<UserProfile | null>(null);
+  const [user, setUser_state] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
 
   const applyToken = useCallback(async (t: string): Promise<boolean> => {
@@ -112,7 +115,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const profile = await _get<UserProfile>("/auth/me", t);
       await tokenStorage.set(t);
       setTokenState(t);
-      setUser(profile);
+      setUser_state(profile);
       return true;
     } catch {
       return false;
@@ -162,7 +165,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     } catch { /* best-effort */ }
     await tokenStorage.remove();
     setTokenState(null);
-    setUser(null);
+    setUser_state(null);
   }, [token]);
 
   const _setToken = useCallback((t: string) => {
@@ -170,8 +173,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setTokenState(t);
   }, []);
 
+  const setUser = useCallback((profile: UserProfile) => setUser_state(profile), []);
+
   return (
-    <AuthContext.Provider value={{ token, user, loading, login, logout, register, _setToken }}>
+    <AuthContext.Provider value={{ token, user, loading, login, logout, register, _setToken, setUser }}>
       {children}
     </AuthContext.Provider>
   );
