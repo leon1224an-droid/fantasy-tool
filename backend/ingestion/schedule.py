@@ -8,6 +8,7 @@ ESPN scoreboard endpoint (no auth required):
   ?dates=YYYYMMDD
 """
 
+import asyncio
 from collections import defaultdict
 from datetime import date, timedelta
 
@@ -107,22 +108,27 @@ async def fetch_schedule() -> tuple[dict[int, dict[str, int]], dict[int, dict[da
     week_counts: dict[int, dict[str, int]] = {}
     week_days: dict[int, dict[date, list[str]]] = {}
 
+    # Collect all (week, date) pairs upfront, then fetch all 21 days concurrently
+    all_pairs: list[tuple[dict, date]] = []
+    for week in PLAYOFF_WEEKS:
+        d = week["start"]
+        while d <= week["end"]:
+            all_pairs.append((week, d))
+            d += timedelta(days=1)
+
     async with httpx.AsyncClient(timeout=20) as client:
-        for week in PLAYOFF_WEEKS:
-            counts: dict[str, int] = defaultdict(int)
-            days: dict[date, list[str]] = {}
+        results = await asyncio.gather(
+            *[_games_on_date(client, d) for _, d in all_pairs]
+        )
 
-            d = week["start"]
-            while d <= week["end"]:
-                teams = await _games_on_date(client, d)
-                days[d] = teams
-                for team in teams:
-                    counts[team] += 1
-                d += timedelta(days=1)
+    for (week, d), teams in zip(all_pairs, results):
+        wn = week["week"]
+        week_days.setdefault(wn, {})[d] = teams
+        counts = week_counts.setdefault(wn, defaultdict(int))
+        for team in teams:
+            counts[team] += 1
 
-            week_counts[week["week"]] = dict(counts)
-            week_days[week["week"]] = days
-
+    week_counts = {wn: dict(c) for wn, c in week_counts.items()}
     return week_counts, week_days
 
 
