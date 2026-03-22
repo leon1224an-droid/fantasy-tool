@@ -12,6 +12,7 @@ from collections import defaultdict
 from datetime import date, timedelta
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
