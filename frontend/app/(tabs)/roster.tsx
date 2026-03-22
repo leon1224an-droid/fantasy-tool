@@ -30,6 +30,7 @@ import {
   activateSavedRoster,
   loadYahooTeamToRoster,
   getLeagueTeams,
+  ingestYahooLeague,
   RosterPlayer,
   NBAPlayerSearchResult,
   NBAPlayerInfo,
@@ -158,6 +159,11 @@ function ActiveRoster() {
       };
       setActiveTeam(updatedTeam);
     },
+  });
+
+  const yahooSyncMutation = useMutation({
+    mutationFn: ingestYahooLeague,
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["league-teams"] }),
   });
 
   const saveRosterMutation = useMutation({
@@ -337,7 +343,22 @@ function ActiveRoster() {
           {!yahooTeams ? (
             <ActivityIndicator style={{ margin: 16 }} />
           ) : yahooTeams.length === 0 ? (
-            <Text style={styles.emptyText}>No Yahoo teams found. Sync Yahoo on the Dashboard first.</Text>
+            <View style={{ alignItems: "center", padding: 16, gap: 10 }}>
+              <Text style={styles.emptyText}>No Yahoo teams found.</Text>
+              <Button
+                mode="contained"
+                icon="sync"
+                loading={yahooSyncMutation.isPending}
+                onPress={() => yahooSyncMutation.mutate()}
+              >
+                Sync Yahoo Now
+              </Button>
+              {yahooSyncMutation.isError && (
+                <Text style={{ color: "#c62828", fontSize: 12 }}>
+                  {(yahooSyncMutation.error as Error).message}
+                </Text>
+              )}
+            </View>
           ) : (
             yahooTeams.map((team) => (
               <TouchableOpacity

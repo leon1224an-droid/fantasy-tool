@@ -121,6 +121,10 @@ export default function HomeScreen() {
       ingestAll().catch(() => {});
       ingestProjections().catch(() => {});
     }
+    // Also sync Yahoo league data on login if linked + league set (fire-and-forget)
+    if (user.yahoo_linked && user.yahoo_league_id) {
+      ingestYahooLeague().catch(() => {});
+    }
   }, [user?.id]);
 
   const syncMutation = useMutation({

@@ -76,19 +76,12 @@ import os as _os
 import re as _re
 
 _ALLOWED_ORIGINS_ENV = _os.getenv("ALLOWED_ORIGINS", "")
-
-def _is_allowed_origin(origin: str) -> bool:
-    # Always allow any localhost / 127.0.0.1 port in development
-    if _re.match(r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$", origin):
-        return True
-    if _ALLOWED_ORIGINS_ENV:
-        return origin in _ALLOWED_ORIGINS_ENV.split(",")
-    return False
+_EXTRA_ORIGINS: list[str] = [o.strip() for o in _ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://[a-z0-9-]+\.vercel\.app",
-    allow_origins=_ALLOWED_ORIGINS_ENV.split(",") if _ALLOWED_ORIGINS_ENV else [],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?|https://[a-z0-9][a-z0-9\-]*\.vercel\.app",
+    allow_origins=_EXTRA_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
