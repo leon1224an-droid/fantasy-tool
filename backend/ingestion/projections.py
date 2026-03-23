@@ -100,7 +100,7 @@ async def fetch_nba_player_stats(season: str | None = None) -> dict[str, dict[st
         endpoint = leaguedashplayerstats.LeagueDashPlayerStats(
             season=season,
             per_mode_detailed="PerGame",
-            timeout=60,
+            timeout=25,
         )
         df = endpoint.get_data_frames()[0]
         result: dict[str, dict[str, float]] = {}

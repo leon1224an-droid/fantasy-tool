@@ -484,7 +484,14 @@ async def run_ingest_projections(
                 ),
             )
 
-    await ingest_projections(db, user_id=current_user.id)
+    try:
+        await ingest_projections(db, user_id=current_user.id)
+    except Exception as exc:
+        print(f"[ingest_projections] NBA Stats API failed: {exc}")
+        return IngestResponse(
+            status="warning",
+            message=f"NBA Stats API unavailable ({type(exc).__name__}). Use Basketball Monster CSV or Yahoo as your projection source.",
+        )
 
     # Record the successful fetch time
     current_user.nba_projections_fetched_at = datetime.now(timezone.utc)
