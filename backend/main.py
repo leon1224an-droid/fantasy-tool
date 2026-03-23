@@ -39,7 +39,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .auth_utils import get_current_user
 from .database import dispose_db, get_db, init_db
 from .limiter import limiter
-from .ingestion.projections import ingest_projections
 from .ingestion.schedule import PLAYOFF_WEEKS, expand_team_set, ingest_schedule, normalize_team_abbr
 from .ingestion.source import get_active_source
 from .models import GameDay, Player, PlayerProjection, SavedRoster, TeamSchedule, User, YahooLeagueTeam
@@ -459,47 +458,6 @@ async def get_schedule(
 
 # ---------------------------------------------------------------------------
 # Protected routes — ingestion
-# ---------------------------------------------------------------------------
-@app.post("/ingest/projections", response_model=IngestResponse, tags=["ingestion"])
-async def run_ingest_projections(
-    force: bool = Query(default=False, description="Re-fetch from NBA Stats API even if fetched today"),
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Fetch NBA Stats season averages → PlayerProjection rows for the user's roster.
-    Skips the NBA Stats API call if projections were already fetched today for this
-    user (rate-limited to once per day). Pass force=true to bypass.
-    """
-    if not force and current_user.nba_projections_fetched_at:
-        age = datetime.now(timezone.utc) - current_user.nba_projections_fetched_at
-        if age < timedelta(hours=24):
-            next_fetch = current_user.nba_projections_fetched_at + timedelta(hours=24)
-            return IngestResponse(
-                status="skipped",
-                message=(
-                    f"NBA stats already fetched {int(age.total_seconds() // 3600)}h ago. "
-                    f"Next fetch available at {next_fetch.strftime('%Y-%m-%d %H:%M UTC')}. "
-                    "Pass force=true to override."
-                ),
-            )
-
-    try:
-        await ingest_projections(db, user_id=current_user.id)
-    except Exception as exc:
-        print(f"[ingest_projections] NBA Stats API failed: {exc}")
-        return IngestResponse(
-            status="warning",
-            message=f"NBA Stats API unavailable ({type(exc).__name__}). Use Basketball Monster CSV or Yahoo as your projection source.",
-        )
-
-    # Record the successful fetch time
-    current_user.nba_projections_fetched_at = datetime.now(timezone.utc)
-    await db.commit()
-
-    return IngestResponse(status="ok", message="Projections ingested for all 3 playoff weeks.")
-
-
 # ---------------------------------------------------------------------------
 # Protected routes — projections view
 # ---------------------------------------------------------------------------

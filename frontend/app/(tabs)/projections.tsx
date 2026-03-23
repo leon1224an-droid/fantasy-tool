@@ -8,14 +8,12 @@ import { ProjectionCard } from "../../components/ProjectionCard";
 import { LoadingOrError } from "../../components/LoadingOrError";
 
 const SOURCE_LABELS: Record<string, string> = {
-  nba_api: "NBA API",
   yahoo: "Yahoo",
   bball_monster: "Basketball Monster",
   blended: "Blended",
 };
 
 const SOURCE_COLORS: Record<string, string> = {
-  nba_api: "#1565c0",
   yahoo: "#6a0dad",
   bball_monster: "#2e7d32",
   blended: "#e65100",

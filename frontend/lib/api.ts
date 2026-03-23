@@ -225,9 +225,6 @@ export async function ingestAll(): Promise<void> {
   await apiFetch<unknown>("/ingest/all", { method: "POST" });
 }
 
-export async function ingestProjections(force = false): Promise<{ status: string; message: string }> {
-  return apiFetch(`/ingest/projections${force ? "?force=true" : ""}`, { method: "POST" });
-}
 
 export function getHealth(): Promise<HealthResponse> {
   return apiFetch<HealthResponse>("/health");
@@ -553,4 +550,26 @@ export interface ScheduledMatchup {
 
 export function getLeagueMatchups(week: number): Promise<ScheduledMatchup[]> {
   return apiFetch<ScheduledMatchup[]>(`/league/matchups?week=${week}`);
+}
+
+export interface CustomRosterPlayer {
+  name: string;
+  team: string;
+  positions: string[];
+}
+
+export function matchupCustomRosters(params: {
+  team_a_name: string;
+  team_a_players: CustomRosterPlayer[];
+  team_b_name: string;
+  team_b_players: CustomRosterPlayer[];
+  week: number;
+  exclude_a: string[];
+  exclude_b: string[];
+}): Promise<MatchupResult> {
+  return apiFetch<MatchupResult>("/league/matchup-players", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(params),
+  });
 }

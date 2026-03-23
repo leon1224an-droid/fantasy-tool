@@ -165,7 +165,7 @@ class ProjectionSourceSetting(Base):
         Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     active_source: Mapped[str] = mapped_column(
-        String(20), nullable=False, default="nba_api"
+        String(20), nullable=False, default="bball_monster"
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -254,7 +254,7 @@ class PlayerProjection(Base):
     )
     week_num: Mapped[int] = mapped_column(Integer, nullable=False)
     source: Mapped[str] = mapped_column(
-        String(20), nullable=False, server_default="nba_api"
+        String(20), nullable=False, server_default="bball_monster"
     )
 
     games_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

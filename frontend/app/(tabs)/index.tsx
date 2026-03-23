@@ -21,7 +21,6 @@ import {
   getRoster,
   getSavedRosters,
   ingestAll,
-  ingestProjections,
   getActiveSource,
   setActiveSource,
   ingestYahooLeague,
@@ -33,7 +32,6 @@ import {
 import { useAuth } from "../../lib/authContext";
 
 const SOURCE_LABELS: Record<string, string> = {
-  nba_api: "NBA API",
   yahoo: "Yahoo",
   bball_monster: "BBall Monster",
   blended: "Blended",
@@ -119,7 +117,6 @@ export default function HomeScreen() {
     const stale = !fetchedAt || (Date.now() - fetchedAt.getTime() > 23 * 60 * 60 * 1000);
     if (stale) {
       ingestAll().catch(() => {});
-      ingestProjections().catch(() => {});
     }
     // Also sync Yahoo league data on login if linked + league set (fire-and-forget)
     if (user.yahoo_linked && user.yahoo_league_id) {
@@ -131,7 +128,6 @@ export default function HomeScreen() {
     mutationFn: async () => {
       // Always refresh schedule + projections
       await ingestAll();
-      await ingestProjections(true); // force=true to bypass the 24h throttle on manual sync
       // Refresh Yahoo league data only if linked
       if (user?.yahoo_linked) {
         await ingestYahooLeague();

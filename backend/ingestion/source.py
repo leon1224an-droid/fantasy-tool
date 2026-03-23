@@ -8,12 +8,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models import ProjectionSourceSetting
 
-VALID_SOURCES = {"nba_api", "yahoo", "bball_monster", "blended"}
-DEFAULT_SOURCE = "nba_api"
+VALID_SOURCES = {"yahoo", "bball_monster", "blended"}
+DEFAULT_SOURCE = "bball_monster"
 
 
 async def get_active_source(db: AsyncSession, user_id: int) -> str:
-    """Return the current active source for a user, defaulting to 'nba_api'."""
+    """Return the current active source for a user, defaulting to 'bball_monster'."""
     row = (
         await db.execute(
             select(ProjectionSourceSetting).where(
