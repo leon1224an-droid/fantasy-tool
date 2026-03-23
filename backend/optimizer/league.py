@@ -290,6 +290,124 @@ def project_matchup(a: TeamProjection, b: TeamProjection) -> MatchupResult:
 
 
 # ---------------------------------------------------------------------------
+# Arbitrary-roster projection (for saved-roster matchups)
+# ---------------------------------------------------------------------------
+
+async def compute_arbitrary_team_projection(
+    db: AsyncSession,
+    week_num: int,
+    user_id: int,
+    team_name: str,
+    players: list[dict],   # [{"name", "team", "positions"}, ...]
+    exclude: set[str] | None = None,
+    max_players: int = 13,
+) -> TeamProjection:
+    """
+    Compute a TeamProjection for an arbitrary player list (not a Yahoo team_key).
+    Used by the custom-roster matchup endpoint.
+    """
+    exclude = exclude or set()
+    active_players = [p for p in players if p["name"] not in exclude]
+
+    names = [p["name"] for p in active_players]
+
+    bm_rows = (
+        await db.execute(
+            select(Player, PlayerProjection)
+            .join(PlayerProjection, Player.id == PlayerProjection.player_id)
+            .where(
+                Player.user_id == user_id,
+                Player.name.in_(names),
+                PlayerProjection.week_num == week_num,
+                PlayerProjection.source == "bball_monster",
+            )
+        )
+    ).all()
+    bm_lookup: dict[str, PlayerProjection] = {p.name: proj for p, proj in bm_rows}
+
+    # Sort by BM value, cap at max_players
+    active_players.sort(
+        key=lambda p: bm_lookup[p["name"]].fantasy_ppg * bm_lookup[p["name"]].games_count
+                      if p["name"] in bm_lookup else 0.0,
+        reverse=True,
+    )
+    active_players = active_players[:max_players]
+    active_names: set[str] = {p["name"] for p in active_players}
+    player_info: dict[str, dict] = {
+        p["name"]: {"team": p.get("team", ""), "positions": p.get("positions", ["SF", "PF"])}
+        for p in active_players
+    }
+
+    gd_rows = (
+        await db.execute(select(GameDay).where(GameDay.week_num == week_num))
+    ).scalars().all()
+
+    team_game_dates: dict[str, set[date_type]] = defaultdict(set)
+    for gd in gd_rows:
+        team_game_dates[normalize_team_abbr(gd.team)].add(gd.game_date)
+    all_dates: list[date_type] = sorted({gd.game_date for gd in gd_rows})
+
+    starts_count: dict[str, int] = {name: 0 for name in active_names}
+    for game_date in all_dates:
+        players_today: list[DailyPlayer] = []
+        for name in active_names:
+            info = player_info[name]
+            p_team = normalize_team_abbr(info["team"])
+            if game_date in team_game_dates.get(p_team, set()):
+                players_today.append(DailyPlayer(
+                    name=name,
+                    positions=info["positions"],
+                    fantasy_ppg=bm_lookup[name].fantasy_ppg if name in bm_lookup else 0.0,
+                ))
+        if players_today:
+            daily_result = optimize_daily_lineup(players_today)
+            for slot_player in daily_result.lineup.values():
+                if slot_player and slot_player in starts_count:
+                    starts_count[slot_player] += 1
+
+    acc: dict[str, float] = {
+        "pts": 0.0, "reb": 0.0, "ast": 0.0, "stl": 0.0, "blk": 0.0,
+        "tov": 0.0, "tpm": 0.0,
+        "_fg_made": 0.0, "_fg_att": 0.0,
+        "_ft_made": 0.0, "_ft_att": 0.0,
+    }
+    for name in active_names:
+        g = starts_count.get(name, 0)
+        proj = bm_lookup.get(name)
+        if not proj or g == 0:
+            continue
+        acc["pts"]  += proj.pts_pg * g
+        acc["reb"]  += proj.reb_pg * g
+        acc["ast"]  += proj.ast_pg * g
+        acc["stl"]  += proj.stl_pg * g
+        acc["blk"]  += proj.blk_pg * g
+        acc["tov"]  += proj.tov_pg * g
+        acc["tpm"]  += proj.tpm_pg * g
+        fg_att = proj.fg_att_pg * g
+        ft_att = proj.ft_att_pg * g
+        acc["_fg_made"] += proj.fg_pct * fg_att
+        acc["_fg_att"]  += fg_att
+        acc["_ft_made"] += proj.ft_pct * ft_att
+        acc["_ft_att"]  += ft_att
+
+    totals = {k: round(v, 2) for k, v in acc.items() if not k.startswith("_")}
+    totals["fg_pct"] = round(
+        acc["_fg_made"] / acc["_fg_att"] if acc["_fg_att"] > 0 else 0.0, 4
+    )
+    totals["ft_pct"] = round(
+        acc["_ft_made"] / acc["_ft_att"] if acc["_ft_att"] > 0 else 0.0, 4
+    )
+
+    return TeamProjection(
+        team_key="__custom__",
+        team_name=team_name,
+        week_num=week_num,
+        totals=totals,
+        total_games=sum(starts_count.values()),
+    )
+
+
+# ---------------------------------------------------------------------------
 # League rankings
 # ---------------------------------------------------------------------------
 

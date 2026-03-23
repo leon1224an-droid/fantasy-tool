@@ -19,6 +19,7 @@ from ..optimizer.league import (
     CategoryResult,
     MatchupResult,
     TeamProjection,
+    compute_arbitrary_team_projection,
     compute_league_rankings,
     compute_team_projections,
     project_matchup,
@@ -88,6 +89,22 @@ class ScheduledMatchupResponse(BaseModel):
     team_a_name: str
     team_b_key: str
     team_b_name: str
+
+
+class CustomRosterPlayer(BaseModel):
+    name: str
+    team: str
+    positions: list[str]
+
+
+class CustomMatchupRequest(BaseModel):
+    team_a_name: str
+    team_a_players: list[CustomRosterPlayer]
+    team_b_name: str
+    team_b_players: list[CustomRosterPlayer]
+    week: int = 21
+    exclude_a: list[str] = []
+    exclude_b: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +235,52 @@ async def get_matchup(
 
     result = project_matchup(a_proj, b_proj)
 
+    return MatchupResponse(
+        team_a=result.team_a,
+        team_b=result.team_b,
+        week_num=result.week_num,
+        categories=[
+            CategoryResultResponse(
+                category=c.category,
+                a_value=c.a_value,
+                b_value=c.b_value,
+                winner=c.winner,
+                margin=c.margin,
+            )
+            for c in result.categories
+        ],
+        a_wins=result.a_wins,
+        b_wins=result.b_wins,
+        ties=result.ties,
+        a_games=result.a_games,
+        b_games=result.b_games,
+    )
+
+
+@router.post("/matchup-players", response_model=MatchupResponse)
+async def matchup_custom_players(
+    body: CustomMatchupRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Head-to-head matchup for two arbitrary player lists (e.g. saved rosters)."""
+    a_proj = await compute_arbitrary_team_projection(
+        db=db,
+        week_num=body.week,
+        user_id=current_user.id,
+        team_name=body.team_a_name,
+        players=[p.model_dump() for p in body.team_a_players],
+        exclude=set(body.exclude_a),
+    )
+    b_proj = await compute_arbitrary_team_projection(
+        db=db,
+        week_num=body.week,
+        user_id=current_user.id,
+        team_name=body.team_b_name,
+        players=[p.model_dump() for p in body.team_b_players],
+        exclude=set(body.exclude_b),
+    )
+    result = project_matchup(a_proj, b_proj)
     return MatchupResponse(
         team_a=result.team_a,
         team_b=result.team_b,

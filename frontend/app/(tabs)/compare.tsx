@@ -123,10 +123,12 @@ export default function CompareScreen() {
   const loadSavedToA = (roster: SavedRosterSchema) => {
     setRosterA(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
     setIlA(new Set());
+    setTeamNameA(roster.name);
   };
   const loadSavedToB = (roster: SavedRosterSchema) => {
     setRosterB(roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })));
     setIlB(new Set());
+    setTeamNameB(roster.name);
   };
 
   const loadYahooToA = (team: LeagueTeamResponse) => {
@@ -150,8 +152,8 @@ export default function CompareScreen() {
   const totA = WEEKS.map((w) => weekTotalA(w));
   const totB = WEEKS.map((w) => weekTotalB(w));
 
-  const labelA = `Roster A${rosterA.length > 0 ? ` (${rosterA.length})` : ""}`;
-  const labelB = `Roster B${rosterB.length > 0 ? ` (${rosterB.length})` : ""}`;
+  const labelA = teamNameA ?? `Roster A${rosterA.length > 0 ? ` (${rosterA.length})` : ""}`;
+  const labelB = teamNameB ?? `Roster B${rosterB.length > 0 ? ` (${rosterB.length})` : ""}`;
 
   return (
     <ScrollView

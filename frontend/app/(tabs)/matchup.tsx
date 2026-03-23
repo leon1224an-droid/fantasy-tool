@@ -1,9 +1,18 @@
 import React, { useState, useMemo, useEffect } from "react";
-import { Modal, ScrollView, StyleSheet, View } from "react-native";
-import { Chip, Divider, IconButton, Menu, Button, Surface, Text, useTheme } from "react-native-paper";
+import { Modal, ScrollView, StyleSheet, TouchableOpacity, View } from "react-native";
+import { ActivityIndicator, Chip, Divider, IconButton, Menu, Button, Surface, Text, useTheme } from "react-native-paper";
 import { useQuery } from "@tanstack/react-query";
-import { getLeagueTeams, getLeagueMatchup, MatchupResult, LeagueTeamResponse } from "../../lib/api";
+import {
+  getLeagueTeams, getLeagueMatchup, matchupCustomRosters,
+  getSavedRosters, SavedRosterSchema,
+  MatchupResult,
+} from "../../lib/api";
 import { useActiveTeam } from "../../lib/activeTeamContext";
+
+interface CustomRoster {
+  name: string;
+  players: { name: string; team: string; positions: string[] }[];
+}
 
 const WEEKS = [21, 22, 23] as const;
 
@@ -33,6 +42,13 @@ export default function MatchupScreen() {
   const [menuA, setMenuA] = useState(false);
   const [menuB, setMenuB] = useState(false);
 
+  // Custom (saved) rosters — when set, overrides the Yahoo team selection for that slot
+  const [customA, setCustomA] = useState<CustomRoster | null>(null);
+  const [customB, setCustomB] = useState<CustomRoster | null>(null);
+
+  // Saved roster picker modal state
+  const [savedPickerFor, setSavedPickerFor] = useState<"a" | "b" | null>(null);
+
   // IL sets: player names excluded from each team's calculation
   const [ilA, setIlA] = useState<Set<string>>(new Set());
   const [ilB, setIlB] = useState<Set<string>>(new Set());
@@ -46,36 +62,92 @@ export default function MatchupScreen() {
   });
 
   const teamData = (key: string | null) => teams?.find((t) => t.team_key === key) ?? null;
-  const teamName = (key: string | null) => teamData(key)?.team_name ?? "Select team";
+
+  // Display name for each slot
+  const slotNameA = customA?.name ?? teamData(teamA)?.team_name ?? "Select team";
+  const slotNameB = customB?.name ?? teamData(teamB)?.team_name ?? "Select team";
 
   const excludeA = useMemo(() => Array.from(ilA), [ilA]);
   const excludeB = useMemo(() => Array.from(ilB), [ilB]);
 
-  const canFetch = !!teamA && !!teamB && teamA !== teamB;
+  // A slot is "ready" if it has a Yahoo team or a custom roster
+  const readyA = !!customA || !!teamA;
+  const readyB = !!customB || !!teamB;
+  // Two slots are "different" if they're not the same Yahoo team (custom rosters always differ)
+  const sameYahoo = !customA && !customB && !!teamA && teamA === teamB;
+  const canFetch = readyA && readyB && !sameYahoo;
+
+  // Use the custom matchup endpoint when either side is a custom roster
+  const useCustomEndpoint = !!(customA || customB);
+
+  // Player list helpers — used when calling the custom endpoint for Yahoo teams
+  const yahooPlayersFor = (key: string | null) =>
+    (teamData(key)?.roster ?? []).map((p) => ({ name: p.name, team: p.team, positions: p.positions }));
 
   const { data: matchup, isLoading, error } = useQuery({
-    queryKey: ["matchup", teamA, teamB, week, excludeA.sort().join(","), excludeB.sort().join(",")],
-    queryFn: () => getLeagueMatchup(teamA!, teamB!, week, excludeA, excludeB),
+    queryKey: [
+      "matchup",
+      customA ? "custom:" + customA.name : teamA,
+      customB ? "custom:" + customB.name : teamB,
+      week,
+      excludeA.slice().sort().join(","),
+      excludeB.slice().sort().join(","),
+    ],
+    queryFn: () => {
+      if (useCustomEndpoint) {
+        return matchupCustomRosters({
+          team_a_name: customA?.name ?? teamData(teamA)?.team_name ?? "Team A",
+          team_a_players: customA?.players ?? yahooPlayersFor(teamA),
+          team_b_name: customB?.name ?? teamData(teamB)?.team_name ?? "Team B",
+          team_b_players: customB?.players ?? yahooPlayersFor(teamB),
+          week,
+          exclude_a: excludeA,
+          exclude_b: excludeB,
+        });
+      }
+      return getLeagueMatchup(teamA!, teamB!, week, excludeA, excludeB);
+    },
     enabled: canFetch,
   });
 
   const yahooIL = (key: string): Set<string> =>
     new Set(teams?.find((t) => t.team_key === key)?.roster.filter((p) => p.is_il).map((p) => p.name) ?? []);
 
-  const handleSelectA = (key: string) => { setTeamA(key); setIlA(yahooIL(key)); setMenuA(false); };
-  const handleSelectB = (key: string) => { setTeamB(key); setIlB(yahooIL(key)); setMenuB(false); };
+  const handleSelectA = (key: string) => {
+    setTeamA(key); setCustomA(null); setIlA(yahooIL(key)); setMenuA(false);
+  };
+  const handleSelectB = (key: string) => {
+    setTeamB(key); setCustomB(null); setIlB(yahooIL(key)); setMenuB(false);
+  };
+  const handleLoadSavedA = (roster: SavedRosterSchema) => {
+    setCustomA({ name: roster.name, players: roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })) });
+    setTeamA(null);
+    setIlA(new Set());
+    setSavedPickerFor(null);
+  };
+  const handleLoadSavedB = (roster: SavedRosterSchema) => {
+    setCustomB({ name: roster.name, players: roster.players.map((p) => ({ name: p.name, team: p.team, positions: p.positions ?? [] })) });
+    setTeamB(null);
+    setIlB(new Set());
+    setSavedPickerFor(null);
+  };
 
   // When a team is loaded in the Roster tab, auto-select it as Team A.
-  // Use activeTeam.roster directly (same source as Compare) — do NOT depend on
-  // the teams query being loaded yet, and do NOT use yahooIL which reads from
-  // a separate cache that may lag.
   useEffect(() => {
     if (!activeTeam) return;
     setTeamA(activeTeam.team_key);
+    setCustomA(null);
     setIlA(new Set(activeTeam.roster.filter((p) => p.is_il).map((p) => p.name)));
   }, [activeTeam?.team_key]);
 
-  const lineupTeam = lineupModal === "a" ? teamData(teamA) : teamData(teamB);
+  // Lineup modal roster — custom roster or Yahoo roster
+  const lineupRoster = lineupModal === "a"
+    ? (customA?.players.map((p) => ({ ...p, is_il: ilA.has(p.name) })) ?? teamData(teamA)?.roster ?? [])
+    : (customB?.players.map((p) => ({ ...p, is_il: ilB.has(p.name) })) ?? teamData(teamB)?.roster ?? []);
+  const lineupTeamName = lineupModal === "a"
+    ? (customA?.name ?? teamData(teamA)?.team_name ?? "")
+    : (customB?.name ?? teamData(teamB)?.team_name ?? "");
+
   const activeIl = lineupModal === "a" ? ilA : ilB;
   const setActiveIl = lineupModal === "a" ? setIlA : setIlB;
 
@@ -100,7 +172,7 @@ export default function MatchupScreen() {
           <View style={styles.modalBox}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>
-                {lineupTeam?.team_name ?? ""} — Set Lineup
+                {lineupTeamName} — Set Lineup
               </Text>
               <IconButton icon="close" size={20} onPress={() => setLineupModal(null)} style={styles.modalClose} />
             </View>
@@ -110,7 +182,7 @@ export default function MatchupScreen() {
             </Text>
             <Divider style={styles.modalDivider} />
             <ScrollView style={styles.modalScroll}>
-              {(lineupTeam?.roster ?? []).map((player) => {
+              {lineupRoster.map((player) => {
                 const isIl = activeIl.has(player.name);
                 return (
                   <View key={player.name} style={styles.playerRow}>
@@ -136,10 +208,10 @@ export default function MatchupScreen() {
             <View style={styles.modalFooter}>
               <Text style={[
                 styles.modalCount,
-                (lineupTeam?.roster.length ?? 0) - activeIl.size > 13 && { color: "#c62828" },
+                lineupRoster.length - activeIl.size > 13 && { color: "#c62828" },
               ]}>
-                {(lineupTeam?.roster.length ?? 0) - activeIl.size} active{" "}
-                {(lineupTeam?.roster.length ?? 0) - activeIl.size > 13 ? `(need ${((lineupTeam?.roster.length ?? 0) - activeIl.size) - 13} more IL)` : "✓"}
+                {lineupRoster.length - activeIl.size} active{" "}
+                {lineupRoster.length - activeIl.size > 13 ? `(need ${lineupRoster.length - activeIl.size - 13} more IL)` : "✓"}
                 {activeIl.size > 0 ? ` · ${activeIl.size} IL` : ""}
               </Text>
               <Button mode="contained" onPress={() => setLineupModal(null)} style={styles.modalDone}>
@@ -171,96 +243,104 @@ export default function MatchupScreen() {
         </View>
 
         {/* Team pickers */}
-        {!teams || teams.length === 0 ? (
-          <Text style={styles.hint}>No teams found. Run "Sync" on the Dashboard first.</Text>
-        ) : (
-          <>
-            <Text style={styles.filterLabel}>Teams</Text>
-            <View style={styles.pickerRow}>
-              {/* Team A */}
-              <View style={styles.pickerCol}>
-                <Menu
-                  visible={menuA}
-                  onDismiss={() => setMenuA(false)}
-                  anchor={
-                    <Button mode="outlined" onPress={() => setMenuA(true)} style={styles.pickerBtn} labelStyle={styles.pickerBtnLabel}>
-                      {teamName(teamA)}
-                    </Button>
-                  }
-                >
-                  {teams.map((t) => (
-                    <Menu.Item key={t.team_key} title={t.team_name} onPress={() => handleSelectA(t.team_key)} />
-                  ))}
-                </Menu>
-                {teamA && (
-                  <Button
-                    mode="text"
-                    compact
-                    icon="account-edit"
-                    onPress={() => setLineupModal("a")}
-                    labelStyle={styles.editBtnLabel}
-                  >
-                    Edit lineup{ilA.size > 0 ? ` (${ilA.size} IL)` : ""}
-                  </Button>
-                )}
-              </View>
+        <Text style={styles.filterLabel}>Teams</Text>
+        <View style={styles.pickerRow}>
+          {/* Team A */}
+          <View style={styles.pickerCol}>
+            <Menu
+              visible={menuA}
+              onDismiss={() => setMenuA(false)}
+              anchor={
+                <Button mode="outlined" onPress={() => setMenuA(true)} style={styles.pickerBtn} labelStyle={styles.pickerBtnLabel}>
+                  {slotNameA}
+                </Button>
+              }
+            >
+              {(teams ?? []).map((t) => (
+                <Menu.Item key={t.team_key} title={t.team_name} onPress={() => handleSelectA(t.team_key)} />
+              ))}
+              {(teams ?? []).length > 0 && <Divider />}
+              <Menu.Item
+                title="Load saved roster…"
+                leadingIcon="bookmark-outline"
+                onPress={() => { setSavedPickerFor("a"); setMenuA(false); }}
+              />
+            </Menu>
+            {readyA && (
+              <Button
+                mode="text"
+                compact
+                icon="account-edit"
+                onPress={() => setLineupModal("a")}
+                labelStyle={styles.editBtnLabel}
+              >
+                Edit lineup{ilA.size > 0 ? ` (${ilA.size} IL)` : ""}
+              </Button>
+            )}
+          </View>
 
-              <Text style={styles.vsText}>vs</Text>
+          <Text style={styles.vsText}>vs</Text>
 
-              {/* Team B */}
-              <View style={styles.pickerCol}>
-                <Menu
-                  visible={menuB}
-                  onDismiss={() => setMenuB(false)}
-                  anchor={
-                    <Button mode="outlined" onPress={() => setMenuB(true)} style={styles.pickerBtn} labelStyle={styles.pickerBtnLabel}>
-                      {teamName(teamB)}
-                    </Button>
-                  }
-                >
-                  {teams.map((t) => (
-                    <Menu.Item key={t.team_key} title={t.team_name} onPress={() => handleSelectB(t.team_key)} />
-                  ))}
-                </Menu>
-                {teamB && (
-                  <Button
-                    mode="text"
-                    compact
-                    icon="account-edit"
-                    onPress={() => setLineupModal("b")}
-                    labelStyle={styles.editBtnLabel}
-                  >
-                    Edit lineup{ilB.size > 0 ? ` (${ilB.size} IL)` : ""}
-                  </Button>
-                )}
-              </View>
-            </View>
-          </>
-        )}
+          {/* Team B */}
+          <View style={styles.pickerCol}>
+            <Menu
+              visible={menuB}
+              onDismiss={() => setMenuB(false)}
+              anchor={
+                <Button mode="outlined" onPress={() => setMenuB(true)} style={styles.pickerBtn} labelStyle={styles.pickerBtnLabel}>
+                  {slotNameB}
+                </Button>
+              }
+            >
+              {(teams ?? []).map((t) => (
+                <Menu.Item key={t.team_key} title={t.team_name} onPress={() => handleSelectB(t.team_key)} />
+              ))}
+              {(teams ?? []).length > 0 && <Divider />}
+              <Menu.Item
+                title="Load saved roster…"
+                leadingIcon="bookmark-outline"
+                onPress={() => { setSavedPickerFor("b"); setMenuB(false); }}
+              />
+            </Menu>
+            {readyB && (
+              <Button
+                mode="text"
+                compact
+                icon="account-edit"
+                onPress={() => setLineupModal("b")}
+                labelStyle={styles.editBtnLabel}
+              >
+                Edit lineup{ilB.size > 0 ? ` (${ilB.size} IL)` : ""}
+              </Button>
+            )}
+          </View>
+        </View>
 
-        {teamA === teamB && teamA !== null && (
+        {sameYahoo && (
           <Text style={styles.errorText}>Select two different teams.</Text>
         )}
 
         {/* Over-cap warnings */}
-        {teamA && (() => {
-          const count = (teamData(teamA)?.roster.length ?? 0) - ilA.size;
+        {readyA && (() => {
+          const rosterLen = customA ? customA.players.length : (teamData(teamA)?.roster.length ?? 0);
+          const count = rosterLen - ilA.size;
           return count > 13 ? (
             <View style={styles.overCapBanner}>
               <Text style={styles.overCapTitle}>⚠ Team A: {count} active players — max 13</Text>
               <Text style={styles.overCapHint}>
-                Tap "Edit lineup" under Team A and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
+                Tap "Edit lineup" and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
               </Text>
             </View>
           ) : null;
         })()}
-        {teamB && (() => {
-          const count = (teamData(teamB)?.roster.length ?? 0) - ilB.size;
+        {readyB && (() => {
+          const rosterLen = customB ? customB.players.length : (teamData(teamB)?.roster.length ?? 0);
+          const count = rosterLen - ilB.size;
           return count > 13 ? (
             <View style={styles.overCapBanner}>
               <Text style={styles.overCapTitle}>⚠ Team B: {count} active players — max 13</Text>
               <Text style={styles.overCapHint}>
-                Tap "Edit lineup" under Team B and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
+                Tap "Edit lineup" and move {count - 13} player{count - 13 > 1 ? "s" : ""} to IL so exactly 13 are active.
               </Text>
             </View>
           ) : null;
@@ -271,9 +351,74 @@ export default function MatchupScreen() {
 
         {matchup && <MatchupCard matchup={matchup} />}
       </ScrollView>
+
+      {/* Saved roster picker */}
+      <SavedRosterPickerModal
+        visible={savedPickerFor !== null}
+        onClose={() => setSavedPickerFor(null)}
+        onSelect={savedPickerFor === "a" ? handleLoadSavedA : handleLoadSavedB}
+      />
     </View>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Saved roster picker modal
+// ---------------------------------------------------------------------------
+function SavedRosterPickerModal({
+  visible, onClose, onSelect,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onSelect: (r: SavedRosterSchema) => void;
+}) {
+  const { data, isLoading } = useQuery({
+    queryKey: ["saved-rosters"],
+    queryFn: getSavedRosters,
+    enabled: visible,
+  });
+
+  if (!visible) return null;
+
+  return (
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+      <TouchableOpacity style={styles.savedOverlay} activeOpacity={1} onPress={onClose}>
+        <TouchableOpacity activeOpacity={1}>
+          <Surface style={styles.savedCard} elevation={4}>
+            <View style={styles.savedHeader}>
+              <Text style={styles.savedTitle}>Load Saved Roster</Text>
+              <IconButton icon="close" size={20} onPress={onClose} style={{ margin: 0 }} />
+            </View>
+            <Divider />
+            {isLoading && <ActivityIndicator style={{ margin: 20 }} />}
+            {!isLoading && (!data || data.length === 0) && (
+              <Text style={styles.savedEmpty}>No saved rosters. Create one in the Roster tab.</Text>
+            )}
+            <ScrollView style={styles.savedList}>
+              {(data ?? []).map((roster) => (
+                <TouchableOpacity
+                  key={roster.id}
+                  style={styles.savedRow}
+                  onPress={() => onSelect(roster)}
+                  activeOpacity={0.6}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.savedRosterName}>{roster.name}</Text>
+                    <Text style={styles.savedRosterMeta}>
+                      {roster.players.length} players · {roster.players.map((p) => p.name.split(" ").pop()).join(", ")}
+                    </Text>
+                  </View>
+                  <IconButton icon="chevron-right" size={18} iconColor="#6750a4" style={{ margin: 0 }} />
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </Surface>
+        </TouchableOpacity>
+      </TouchableOpacity>
+    </Modal>
+  );
+}
+
 
 function MatchupCard({ matchup }: { matchup: MatchupResult }) {
   const nameA = matchup.team_a.split(" ").slice(-1)[0];
@@ -411,4 +556,18 @@ const styles = StyleSheet.create({
   modalFooter: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingTop: 14 },
   modalCount: { fontSize: 13, color: "#555", fontWeight: "600" },
   modalDone: { borderRadius: 10 },
+
+  // Saved roster picker
+  savedOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.4)", justifyContent: "center", alignItems: "center", padding: 24 },
+  savedCard: { width: "100%", maxWidth: 420, borderRadius: 16, backgroundColor: "#fff", overflow: "hidden" },
+  savedHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingLeft: 16, paddingRight: 8, paddingVertical: 8 },
+  savedTitle: { fontSize: 15, fontWeight: "700", color: "#1a1a1a" },
+  savedEmpty: { color: "#888", textAlign: "center", margin: 24, fontSize: 13 },
+  savedList: { maxHeight: 320 },
+  savedRow: {
+    flexDirection: "row", alignItems: "center", paddingHorizontal: 16, paddingVertical: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: "#f0f0f0",
+  },
+  savedRosterName: { fontSize: 14, fontWeight: "600", color: "#1a1a1a" },
+  savedRosterMeta: { fontSize: 11, color: "#888", marginTop: 2 },
 });
